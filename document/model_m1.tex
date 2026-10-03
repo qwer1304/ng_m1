@@ -1,0 +1,207 @@
+\section{The model M1 and its rationale}
+\label{sec:model}
+
+\begin{definition}[Model M1]\label{def:m1}
+For an environment $u=(y,t,e)$, write $c(u)=(y,t)\in\Cset$ and $r(u)=(t,e)\in\Rset$ for the two cells it
+determines. The latent vector for an image from environment $u$ is $Z^u=(Z_c^u,Z_s^u)$ with
+$Z_c^u\in\R^{n_c}$ (`content'), $Z_s^u\in\R^{n_s}$ (`style'), $n=n_c+n_s$, and the image is
+$X^u\in\R^{d}$. Note that Ng et al. assume $p^{(u)}_Z$ is third-order differentiable and 
+\emph{has full support on $\R^n$}.The data are generated as follows.
+\begin{align}
+X^u &= g(Z_c^u,Z_s^u), \label{eq:mixing}\\
+Z_{c,i}^u &= f_i^{c(u)}\bigl(\PA(Z_{c,i}^u;\Gc)\bigr) + \varepsilon_{c,i}^u,
+\qquad \varepsilon_{c,i}^u\sim\Nn\bigl(\mu_{c,i}^{c(u)},(\sigma_{c,i}^{c(u)})^2\bigr),
+\quad i=1,\dots,n_c, \label{eq:content}\\
+Z_{s,j}^u &= \varepsilon_{s,j}^u,
+\qquad \varepsilon_{s,j}^u\sim\Nn\bigl(\mu_{j}^{r(u)},(\sigma_{s,j}^{r(u)})^2\bigr),
+\quad j=1,\dots,n_s, \label{eq:style}
+\end{align}
+Here $\Gc$ is an unknown DAG over the content latents, $g$ is an unknown mixing function, and the noise
+variables are mutually independent (within an image, and across images). Neither $\Gc$ nor $g$ carries
+an index: they are the same for every environment. Everything that changes with $u$ -- the mechanisms
+$f_i^{c(u)}$, $\mu_{c,i}^{c(u)}$, $\sigma_{c,i}^{c(u)}$ and the style parameters $\mu_j^{r(u)}$, $\sigma_{s,j}^{r(u)}$ --
+changes only through $c(u)$ or $r(u)$, never through $u$ as a whole; this is the content of
+\labelcref{item:P2,item:P3} below. In addition:
+\begin{enumerate}[label=(P\arabic*),leftmargin=2.4em]
+\item \label{item:P1} \emph{Invariant mixing.} $g$ is a $\mathrm{C}^2$ diffeomorphism onto its image and is the same for all
+      species, times of day and locations.
+\item \label{item:P2} \emph{Invariant content mechanisms.} The DAG $\Gc$ and the content mechanisms
+      $(f_i^{(c)},\mu_{c,i}^{(c)},\sigma_{c,i}^{(c)})_{c\in\Cset}$ depend on the environment $u$ only through $c(u)$, not
+      on the location: for environments $u=(y,t,e)$ and $u'=(y,t,e')$ with the same $(y,t)$, $Z_c^u$ and
+      $Z_c^{u'}$ have the same law.
+\item \label{item:P3} \emph{Exogenous style.} The style latents have no parents and no children among the latents.
+      Their distribution depends on the environment $u$ only through $r(u)=(t,e)$, and they are
+      independent of the species $Y$ and of $Z_c^u$ given $(t,e)$.
+\item \label{item:P4} \emph{Location-specific label prior.} $C\mid E=e\sim p^{e}(C)$ is allowed to differ across
+      locations; this is a fact about the observed variables $(Y,T,E)$, external to the structural
+      equations \eqref{eq:mixing}--\eqref{eq:style}, and is used only for prediction
+      (\cref{sec:use}).
+\end{enumerate}
+The latent DAG over $Z^u$ is $\Gc$ together with $n_s$ isolated nodes (the style latents), the same DAG
+for every $u$. The time of day $T$ enters both blocks: it is part of $c(u)$, which indexes the content
+mechanisms, and part of $r(u)$, which indexes the style distributions.
+\end{definition}
+
+\Cref{fig:m1} shows the model.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  >=Stealth,
+  node distance=8mm and 12mm,
+  latnode/.style={
+    circle,draw,minimum size=8mm,inner sep=1pt
+  },
+  obsnode/.style={
+    circle,draw,fill=gray!25,minimum size=8mm,inner sep=1pt
+  },
+  plate/.style={
+    draw,rounded corners,inner sep=4mm
+  },
+  platelabel/.style={font=\small,anchor=north west,inner sep=2pt},
+  paramplate/.style={
+    draw,
+    rounded corners,
+    inner xsep=2mm,
+    inner ysep=1mm,
+    align=left
+  }
+]
+
+% ---- observed indices, inside the sample plate ----
+\node[obsnode] (Y) at (-1.4,2.6) {$Y$};
+\node[obsnode] (T) at (Y |- 0,0.6) {$T$};
+\node[obsnode] (E) at (Y |- 0,-1.6) {$e$};
+
+% ---- content latents (one sample's worth), with the shared DAG structure drawn once ----
+\node[latnode] (c1) at (1.8,2.8)     {$Z_{c,1}^u$};
+\node[latnode] (c2) at (4.2,0 |- c1) {$Z_{c,2}^u$};
+\node[latnode] (c3) at (c1 |- 0,1.0) {$Z_{c,3}^u$};
+\node[latnode] (c4) at (c2 |- c3)    {$Z_{c,4}^u$};
+
+\draw[->] (c1) -- (c2);
+\draw[->] (c1) -- (c3);
+\draw[->] (c2) -- (c4);
+\draw[->] (c3) -- (c4);
+
+\begin{scope}[on background layer]
+  \node[
+    fit=(c1)(c2)(c3)(c4),
+    draw,dashed,rounded corners,
+    inner sep=5mm
+  ] (C) {};
+\end{scope}
+
+\node[
+  font=\scriptsize,
+  below=1mm of C.south,
+  xshift=-2mm
+] {structure $\Gc$ (shared, no plate)};
+
+\node[latnode] (s1) at (3.0,-1.6) {$Z_{s}^u$};
+\node[obsnode] (X)  at (6.6,0.6)  {$X^u$};
+
+\draw[->]
+  (C.east) -- node[above,sloped,font=\small]{$g$} (X);
+
+\draw[->]
+  (s1) -- node[below,sloped,font=\small]{$g$} (X);
+
+% ---- the sample plate: one copy per image / environment u=(y,t,e) ----
+\begin{scope}[on background layer]
+  \node[
+    plate,
+    fit=(Y)(T)(E)(C)(s1)(X),
+    inner sep=6mm
+  ] (plateU) {};
+\end{scope}
+
+\node[platelabel] at (plateU.north west) {$u=(y,t,e)$};
+
+% ---- content-mechanism parameter plate: parameters indexed by the content cell c, no sample index ----
+\node[
+  paramplate
+] (plateC) at (3.65,5.9) {%
+  \begin{tabular}{@{}l@{}}
+    $c\in\Cset_{\mathrm{occ}}$\\[0.1mm]
+    $f_i^{(c)},\ \mu_{c,i}^{(c)},\ \sigma_{c,i}^{(c)}$\footnotemark\\[0.1mm]
+    $i=1,\dots,n_c$
+  \end{tabular}%
+};
+
+\draw[->]
+  (plateC.south) --
+  node[right,font=\small,pos=.3]{$c(u)=(y,t)$}
+  (C.north);
+
+% ---- style plate: parameters indexed by the style cell r, no sample index ----
+\node[
+  paramplate
+] (plateR) at (3.65,-4.3) {%
+  \begin{tabular}{@{}l@{}}
+    $r\in\Rset_{\mathrm{occ}}$\\[0.1mm]
+    $\mu_j^{(r)},\ \sigma_{s,j}^{(r)}$\\[0.1mm]
+    $j=1,\dots,n_s$
+  \end{tabular}%
+};
+
+\draw[->]
+  (plateR.north) --
+  node[right,font=\small,pos=.3]{$r(u)=(t,e)$}
+  (s1.south);
+
+% ---- P4: location-specific label prior, external to the SEM ----
+\draw[->,dashed]
+  (E) to[bend right=25]
+  node[below,sloped,font=\scriptsize]
+    {$p^e(C)$, prediction only (P4)}
+  (Y);
+
+\draw[->,dashed]
+  (E) to[bend left=25]
+  (T);
+
+\end{tikzpicture}
+\caption{\textbf{The M1 model, in plate notation.} The large box is the sample plate: one copy of
+$(Y,T,e,Z_c^u,Z_s^u,X^u)$ per image, replicated over $u=(y,t,e)$. The two small boxes above and below
+are parameter plates, replicated over the content cell $c=(y,t)$ and the style cell $r=(t,e)$
+respectively; nothing inside them carries a sample index. The arrow from a parameter plate into the
+sample plate is selected by that \textbf{same} image's own $(y,t)$ or $(t,e)$, as labelled (note that
+$t$ is \textbf{shared}). Objects with no plate around them -- the DAG structure $\Gc$ and the mixing
+$g$ -- are shared by every sample and every cell.
+The dashed arrows are not part of the structural equations \eqref{eq:mixing}--\eqref{eq:style}: they
+record the location-specific label prior of \labelcref{item:P4}, used only at prediction time
+(\cref{sec:use}). $Y$ is unobserved and $T$ can be either observed or unobserved. The four content latents and their edges are only an illustration: the number of
+content latents and their DAG are unknown.}
+\label{fig:m1}
+\end{figure}
+\footnotetext{In an implementation, $\mu_{c,i}^{(c)}$ can be absorbed into $f_i^{(c)}$}.
+
+\paragraph{Rationale.}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Invariance is placed where it is plausible.} Species and time of day produce animal
+      appearance through a mechanism that should not depend on the camera site, so $p(z_c\mid c)$ and
+      $g$ are shared across locations---\labelcref{item:P1},\labelcref{item:P2}.
+\item \textbf{Locations differ by more than the label prior.} A pure shift of $p^e(C)$ (label shift)
+      cannot account for differences of geography, camera and orientation. These are modelled as
+      exogenous variables whose distribution depends on the location---\labelcref{item:P3}.
+\item \textbf{Style depends on the time of day as well.} A specific camera and its position at a
+      location may be affected in a time-of-day-specific way. The style distribution is therefore
+      indexed by $(t,e)$ and not by $e$ alone. The time of day also affects the content,
+      as in \labelcref{item:P2}, so it enters both
+      blocks. Since $Z_s^u$ is independent of the species and of $Z_c^u$ given $(t,e)$, it carries no
+      information about the species beyond what the observed $t$ already provides.
+\item \textbf{Discreteness is kept in an observed variable.} $C$ is observed, so all \emph{latent}
+      variables can be continuous, which is the setting of the continuous theory of
+      \cite{ng2025}. No discrete-latent theory is needed.
+\item \textbf{The content latents are not assumed independent.} Their DAG $\Gc$ is unknown and
+      possibly non-empty; finding it is part of the problem.
+\item \textbf{The number of latents is a modelling choice.} Because $C$ only indexes mechanisms,
+      $n_c$ and $n_s$ are not tied to $|\Cset|$; they are hyperparameters, bounded above by the
+      requirements derived in \cref{sec:reqs}.
+\item \textbf{Relation to earlier frameworks.} The split into an invariant block and a changing
+      block follows the partial-disentanglement idea of \cite{kong2022}; using an observed auxiliary
+      variable to index changing distributions is the mechanism of \cite{khemakhem2020}. This also maps
+      naturally to the application with the auxiliary variable incorporating distributions changing
+      observables.
+\end{itemize}

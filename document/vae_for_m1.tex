@@ -1,0 +1,417 @@
+\section{VAE architecture for M1: end-to-end vs.\ split backbone+head}
+\label{sec:arch}
+
+\Cref{sec:use} sketches the M1 prior and loss abstractly, on top of whatever encoder/decoder
+produces $\hat Z$ from $X$. \Cref{thm:ng} and the propositions built on it in this note are stated for
+exactly one generative object: $X=g(Z)$, with $X$ the actual observed image and $g$ the true, unknown
+mixing map. Only one of the two architectures compared in this section actually instantiates that
+object. \Cref{sec:archA} (end-to-end) does. \Cref{sec:archB} (split, frozen backbone) does not: it
+reconstructs a backbone-derived quantity, not $X$, and nothing in \cite{ng2025} says anything about the
+resulting model (\cref{sec:archB:gap}). \Cref{sec:archB} is kept in this note anyway, but as what it
+is -- an unproven speed heuristic, not a second way of applying the theory -- and this section is
+written to say so plainly rather than to imply otherwise. \Cref{app:code} is used throughout as the
+concrete description of what the reference implementation of Ng et al. \cite{ngimpl} already provides
+and what it is missing.
+
+\subsection[Option A: end-to-end]{Option A: end-to-end -- the only option that implements \cref{def:m1} and \cref{thm:ng} as stated}
+\label{sec:archA}
+The backbone and the VAE head are one model, trained jointly on raw $224\times224$ images: a
+ResNet-50 feeds \texttt{encoder\_mu}/\texttt{encoder\_logvar}, and every term of the M1 loss
+(reconstruction, KL, sparsity; \cref{app:code} on \texttt{Trainer.step}) backpropagates through the
+head \emph{and} through the backbone. This is the only one of the two options in which the object
+being reconstructed -- and hence the object the identifiability argument is actually about -- is the
+true image $x$: the composite (backbone $+$ head) plays the role of the encoder, its decoder plays the
+role of $g$, and the loss compares $\hat x$ against the actual $x$, exactly $X=g(Z)$ of \cref{def:m1},
+with no intermediate object substituted in. \Cref{fig:optA} shows the flow.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  >=Stealth,
+  font=\small,
+  procnode/.style={draw,rounded corners,align=center,inner sep=1.8mm,minimum height=8mm},
+  smallnode/.style={draw,rounded corners,align=center,inner sep=1.3mm,font=\footnotesize,minimum height=7mm},
+  obsnode/.style={circle,draw,fill=gray!25,minimum size=6.5mm,inner sep=1pt}
+]
+
+\node[procnode] (img) at (0.8,3) {224$\times$224\\image $x$};
+\node[procnode] (bb) at (3.5,0 |- img.east) {%
+  \begin{tabular}{@{}c@{}} ResNet-50 \\ backbone \\ (trainable) \end{tabular}};
+\node[smallnode] (enc) at (6.6,0 |- bb.east) {%
+  \begin{tabular}{@{}c@{}} encoder\_mu \\ encoder\_logvar \end{tabular}};
+\node[procnode] (z) at (9.3,0 |- enc.east) {sample $z$};
+\node[procnode] (dec) at (0.3,4.4 -| z.north) {decoder};
+%\node[procnode] (xhat) at (12.1,0 |- dec.east) {$\hat x$};
+
+\node[smallnode] (meannet) at (5.6,0.9) {%
+  \begin{tabular}{@{}c@{}} mean\_net \\ (adj-masked $z$) \end{tabular}};
+\node[obsnode] (u) at (8.6,0 |- meannet.east) {$u$};
+\node[smallnode] (logvarnet) at (10.6,0 |- u.east) {%
+  \begin{tabular}{@{}c@{}} log\_var\_net \\ (domain $u$) \end{tabular}};
+
+\node[procnode] (loss) at (9.0,-1.3) {%
+  \begin{tabular}{@{}c@{}} loss \\ recon$(x,\hat x)$ + KL + sparsity \end{tabular}};
+
+\draw[->] (img) -- node[above] {$x$} (bb);
+\draw[->] (bb) -- node[above] {$\tilde x$} (enc);
+\draw[->] (enc) -- (z);
+\draw[->] (z) -- node[right] {$\hat z$} (dec);
+%\draw[->] (dec) -- (xhat);
+\draw[->] (z) -- (meannet);
+\draw[->] (u) -- (logvarnet);
+\draw[->] (meannet) -- (loss);
+\draw[->] (logvarnet) -- (loss);
+
+\coordinate (dropX1) at (12.1,0 |- dec.east);
+\coordinate (dropX2) at (dropX1 |- loss);
+
+\draw[->]
+  (dec) -- (dropX1)
+  -- node[left,pos=.4] {$\hat x$}
+  (dropX2)
+  -- (loss);
+
+\coordinate (dropA1) at (loss.south |- 0,-2.5);
+\coordinate (dropA2) at (dropA1.west -| 3.5,0);
+\draw[->,dashed,red] (loss.south) -- (dropA1) -- (dropA2) -- (bb.south);
+\node[font=\scriptsize,align=center] at (6.3,-2.8)
+  {gradients: all parameters, including the backbone};
+
+\coordinate (dropI1) at (img.south |- loss.west);
+\draw[->]
+  (img.south)
+    -- node[right,midway] {$x$}
+  (dropI1)
+    -- (loss.west);
+
+\end{tikzpicture}
+\caption{\textbf{\nameref{sec:archA}} Every training step runs the full backbone forward, and the
+M1 loss (dashed red) backpropagates through the VAE head and through the backbone. The reconstruction
+term compares $\hat x$ against the true image $x$ -- the object \cref{def:m1,thm:ng} are stated about.}
+\label{fig:optA}
+\end{figure}
+\newpage
+\subsection[Option B: split]{Option B: split (frozen backbone, cached features) -- a heuristic, not a
+second implementation of the theory}
+\label{sec:archB}
+Three separate stages: one to adapt the backbone, one (also run only once) to extract and cache
+features, and one -- the actual M1 estimation -- that is trained and re-trained many times as the
+prior/graph design is iterated. Write $x$ for the true image and $\tilde x:=\mathrm{BB}(x)$ for the
+backbone's output, cached at stage 2 (the $\sim\!3000$-dim embedding described below). This notation
+matters: as \cref{sec:archB:gap} makes precise, stage 3 never sees $x$ at all, only $\tilde x$, and
+everything below should be read with that substitution in view.
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+\item \textbf{Backbone adaptation (once).} Start from an ImageNet-pretrained ResNet-50. Adjust only its
+      batch-norm (BN) layers to TerraIncognita (TI); every other weight stays frozen. 
+      Concretely: run the network in
+      \texttt{train()} mode (so BN layers update from batch statistics) but with gradients disabled,
+      over batches pooled across the three training locations L38/L43/L46 (never L100), with BN 
+      momentum set to \texttt{None} so each layer's running mean/variance is a cumulative 
+      (equally-weighted) average of the per-batch statistics over the whole pass, rather than an 
+      exponential moving average dominated by recent batches.
+\item \textbf{Feature extraction (once).} Run the BN-adjusted, still-frozen backbone $\mathrm{BB}$ in
+      \texttt{eval()} mode once over every image $x$ -- train and test, L100 included -- and cache
+      $\tilde x=\mathrm{BB}(x)$ (per the settled pipeline: layer3 pooled concatenated with the final
+      pooled layer, plus a brightness scalar) together with species/location/time-of-day/image-id in
+      one table. This pass never touches a gradient and never needs to be repeated once the backbone
+      from step (1) is fixed.
+      \begin{itemize}
+      \item \texttt{layer3} refers to ResNet-50's third residual stage 
+      For a 224$\times$224 input:
+      \begin{itemize} 
+      \item \texttt{layer3} output: 1024 channels, 14$\times$14 spatial
+	      $\rightarrow$ global-average-pooled to a 1024-dim vector
+      \item \texttt{layer4} output (the ``final" stage before the classifier): 2048 channels, 7$\times$7 
+	      spatial $\rightarrow$ pooled to 2048-dim -- this is the standard ``ResNet-50 feature vector"
+	  \end{itemize}      
+      Concatenating the two gives $\sim$3072 dims total, i.e.\ $\tilde x\in\R^{3072}$. The reason to
+      include \texttt{layer3} and not just the usual final-layer 2048-dim vector: \texttt{layer4} 
+      sits right before the (originally) 1000-way ImageNet classifier, so it's the most abstracted, 
+      most class- \linebreak
+      discriminative, and the stage most likely to have had low-level nuisance 
+      information (illumination, color balance, camera signature) trained \textit{out} of it. 
+      \texttt{layer3} 
+      is one stage earlier and less abstracted, so it retains more texture/color/illumination 
+      detail -- the kind of signal the M1 style block needs. Concatenating both gives one embedding 
+      that's more likely to carry both content-relevant and style-relevant information, rather than 
+      betting everything on whichever the last layer kept.
+      \item \textit{Brightness} scalar: mean luminance of the image, computed as a plain scalar, not 
+      from the network at all. Concretely:
+      \begin{itemize}
+      \item convert the image to luminance via a standard weighted sum, 
+       		e.g. $Y = 0.299R + 0.587G + 0.114B$ (or BT.709 weights $0.2126/0.7152/0.0722$ -- either is 
+       		fine, just stay consistent) 
+      \item average $Y$ over all pixels $\rightarrow$ one number per image
+      \end{itemize}
+      Important detail: compute this on the raw resized image (pixel values in their normal range, e.g. 
+      $[0,255]$ or $[0,1]$), before ImageNet mean/std normalization -- normalizing per-channel with 
+      ImageNet's statistics would distort the brightness value in a way tied to ImageNet's own color 
+      statistics, not the image's actual brightness. Same measure must be used at train and test time 
+      (including on L100), since the note later proposes brightness as a TOD proxy -- consistency there 
+      matters more than the exact formula chosen.
+      \end{itemize}
+\item \textbf{M1 estimation (iterated many times).} The M1 VAE (the small MLPs of \cref{app:code},
+      modified per \cref{sec:use}) is trained on the cached tensor dataset $\tilde x$ from step (2);
+      only those MLPs ever receive a gradient, and none of it touches the backbone. Its encoder maps
+      $\tilde x\mapsto\hat Z$, and its decoder maps $\hat Z\mapsto\hat{\tilde x}$ -- a reconstruction of
+      the cached embedding, not of the image. The reconstruction term of the loss is therefore
+      $\mathrm{recon}(\tilde x,\hat{\tilde x})$, not $\mathrm{recon}(x,\hat x)$; \cref{fig:optB} draws
+      this explicitly. This is the step that is actually redesigned and re-run repeatedly --
+      content/style $u$-dependence, ANM vs.\ HNM, the sink-freezing rule -- while steps (1) and (2)
+      stay fixed.
+\end{enumerate}
+\Cref{fig:optB} shows the flow.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  >=Stealth,
+  font=\small,
+  procnode/.style={draw,rounded corners,align=center,inner sep=1.8mm,minimum height=8mm},
+  smallnode/.style={draw,rounded corners,align=center,inner sep=1.5mm,font=\footnotesize,minimum height=7mm},
+  stagebox/.style={draw,dashed,rounded corners,inner sep=4mm}
+]
+
+% ---- stage 1: backbone adaptation ----
+\node[procnode] (imnet) at (0,3.2) {%
+  \begin{tabular}{@{}c@{}} ImageNet-\\pretrained \\ ResNet-50 \end{tabular}};
+\node[procnode] (bnrecal) at (3.6,0 |- imnet.east) {%
+  \begin{tabular}{@{}c@{}} BN-only recalibration \\ on L38/L43/L46 \\ (no gradient) \end{tabular}};
+\node[procnode] (frozen) at (8.0,0 |- bnrecal.east) {%
+  \begin{tabular}{@{}c@{}} frozen backbone $\mathrm{BB}$ \\ (all weights fixed) \end{tabular}};
+
+\draw[->] (imnet) -- node[above] {$x$} (bnrecal);
+\draw[->] (bnrecal) -- (frozen);
+
+\begin{scope}[on background layer]
+  \node[stagebox,fit=(imnet)(bnrecal)(frozen),inner sep=2mm] (stage1) {};
+\end{scope}
+\node[font=\small,above=1mm of stage1.north west,anchor=south west] {stage 1: backbone adaptation (once)};
+
+% ---- stage 2: feature extraction (once) ----
+\node[procnode] (allimg) at (0,0) {%
+  \begin{tabular}{@{}c@{}} every image $x$ \\ (train \emph{and} L100) \end{tabular}};
+\node[procnode] (cache) at (4.4,0 |- allimg.east) {%
+  \begin{tabular}{@{}c@{}} cached table: $\tilde x=\mathrm{BB}(x)$ \\ + species/TOD/\\location/id \end{tabular}};
+
+\draw[->] (frozen) -- ++(0,-1.6) -| (allimg.north);
+\draw[->] (allimg) -- (cache);
+
+\begin{scope}[on background layer]
+  \node[stagebox,fit=(allimg)(cache),inner sep=2mm] (stage2) {};
+\end{scope}
+\node[font=\small,below=1mm of stage2.south west,anchor=north west] {stage 2: feature extraction (once)};
+
+% ---- stage 3: M1 estimation (iterated many times) ----
+\node[smallnode,minimum width=3.2cm] (m1enc) at (8.6,-2.9) {%
+  \begin{tabular}{@{}c@{}} M1 VAE encoder: \\ encoder\_mu/logvar \\ (input: $\tilde x$) \end{tabular}};
+\node[procnode] (zhat) at (12.0,0 |- m1enc.east) {sample $\hat z$};
+\node[smallnode,minimum width=3.2cm] (m1dec) at (m1enc.south |- 0,-4.7) {%
+  \begin{tabular}{@{}c@{}} M1 VAE decoder \\ + mean\_net/log\_var\_net \end{tabular}};
+%\node[procnode] (xtilhat) at (zhat.south |- m1dec.east) {$\hat{\tilde x}$};
+\node[procnode] (loss2) at (zhat.south |- 0,-6.4) {%
+  \begin{tabular}{@{}c@{}} loss \\ recon$(\tilde x,\hat{\tilde x})$ + KL + sparsity \end{tabular}};
+
+\coordinate (dropXt1) at (cache.east -| m1enc.north);
+\draw[->]
+  (cache.east) -- (dropXt1)
+  -- node[right,pos=.5] {$\tilde x$}
+  (m1enc.north);
+\draw[->] (cache.east) -| (m1enc.north);
+\draw[->] (m1enc) -- (zhat);
+\draw[->] (zhat) -- node[right=4pt,pos=.5] {$\hat z$} (m1dec);
+%\draw[->] (m1dec) -- (xtilhat);
+%\draw[->] (xtilhat) -- (loss2);
+
+\coordinate (dropXht1) at (zhat.south |- m1dec.east);
+\draw[->] (m1dec.east) -- (dropXht1) -- node[right,pos=.5] {$\hat{\tilde{x}}$} (loss2);
+
+\coordinate (dropT1) at (cache.south |- loss2.west);
+\draw[->] (cache.south) -- (dropT1) -- (loss2.west);
+\node[font=\scriptsize,align=center] at (2.6,-4.4)
+  {recon target is $\tilde x$, \textbf{never} $x$};
+
+\coordinate (dropB1) at (loss2.south |- 0,-7.6);
+\coordinate (dropB2) at (m1dec.south |- dropB1.west);
+\coordinate (dropB3) at (6.2,0 |- dropB1.west);
+\draw[->,dashed,red] (loss2.south) -- (dropB1) -- (dropB2) -- (m1dec.south);
+\draw[->,dashed,red] (dropB2) -- (dropB3) |- (m1enc.west);
+\node[font=\scriptsize,align=center] (fbBlabel) at (10.3,-7.9)
+  {gradients: MLPs only, never reach $\mathrm{BB}$};
+
+\begin{scope}[on background layer]
+  \node[
+    stagebox,
+    fit={
+      (m1enc)(m1dec)(zhat)(loss2)(fbBlabel)
+      ([xshift=-5mm]m1enc.west)
+      ([xshift=-5mm]m1dec.west)
+    },
+    inner sep=2mm
+  ] (stage3) {};
+\end{scope}
+\node[font=\small,below=1mm of stage3.south west,anchor=north west] {stage 3: M1 estimation (iterated many times)};
+
+\end{tikzpicture}
+\caption{\textbf{\nameref{sec:archB}} Stage 1 happens once and touches only BN statistics. Stage 2's
+extraction pass also happens once and produces the cached table of $\tilde x=\mathrm{BB}(x)$. Stage 3
+never sees $x$: its encoder takes $\tilde x$, its decoder reconstructs $\hat{\tilde x}$, and the
+reconstruction term of the loss compares $\tilde x$ against $\hat{\tilde x}$, not $x$ against
+$\hat x$ -- unlike \cref{fig:optA}. Gradients (dashed red) reach only the stage-3 MLPs and never the
+backbone.}
+\label{fig:optB}
+\end{figure}
+
+\paragraph{Why BN-only, not full fine-tuning.}
+BN statistics (per-channel mean and variance) encode low-level image statistics -- illumination,
+color balance, sensor response -- that differ between ImageNet and camera-trap imagery.
+Recalibrating them closes much of that gap cheaply, without touching the learned convolutional
+filters or anything built on top of them, needs no labels, and needs only one forward pass. It also
+cannot overfit to three locations the way updating the convolutional weights (or the whole network)
+could. This last point matters specifically for M1: a supervised fine-tuning objective (species
+cross-entropy) has no reason to preserve location-relevant information and is, if anything, pushed to
+discard it -- which would remove exactly the signal the style block $Z_s$ needs. BN-only adaptation
+changes global per-channel statistics, not which features are computed, so it is far less likely to
+erase that signal.
+
+\paragraph{What reconstructing $\tilde x$ instead of $x$ actually means.}
+\label{sec:archB:gap}
+\Cref{def:m1,thm:ng} are stated for $X=g(Z)$ with $X$ the true observation and $g$ a $\mathrm{C}^2$
+diffeomorphism onto its image (\cref{sec:ng}). Stage 3, as just described, does not fit that model. It
+fits a model of $\tilde X=\mathrm{BB}(g^(Z))$ -- the composite of the true mixing $g$ with the 
+backbone $\mathrm{BB}$ -- and \cite{ng2025} says nothing about this composite: $\mathrm{BB}$ is not part 
+of the generative process \cref{def:m1} describes, and nothing constrains $\mathrm{BB}\circ g$ 
+to be injective, differentiable in the required sense, or otherwise well-behaved, even when $g$ itself 
+is.
+Quite the opposite is likely: $\mathrm{BB}$ is trained (\cref{sec:pretrain}) on an objective with no
+term rewarding invertibility, and both pretraining families discussed there are pushed, to different
+degrees, toward \emph{discarding} exactly the nuisance/style variation that would need to survive for
+$\mathrm{BB}\circ g$ to remain injective in the directions $Z_s$ occupies. \Cref{app:probe} tests
+whether species and location remain \emph{linearly readable} in $\tilde x$ -- a much weaker property
+than the injectivity the theorem needs, and one that can hold even when $\mathrm{BB}\circ g$ 
+collapses many distinct $(Z_c,Z_s)$ onto embeddings a linear classifier can still separate but a decoder 
+cannot invert.
+
+One more point worth being explicit about, since it is easy to read the reference code the wrong way:
+\cite{ng2025}'s own paper states the reconstruction loss results from the assumed 
+decoder likelihood $p^{(u)}(X \mid \hat Z)$ (Gaussian, pre-specified variance), which 
+doesn't hurt the identifiability argument but merely limits the scope. \nameref{sec:archB} breaks this: 
+it takes that somewhat limited scope and turns it into an non-principled substitution ($\tilde x$ for 
+$x$). 
+\nameref{sec:archB} should therefore be read as exactly what it is: a speed-motivated heuristic that may 
+or may not preserve enough of $Z$'s structure in $\tilde x$ for stage 3 to recover something useful, not 
+a second, equally valid way of instantiating \cref{def:m1,thm:ng}. Whether it works is an empirical 
+question this note does not resolve; \nameref{sec:archA} remains the only construction its own 
+theoretical machinery actually describes.
+
+\subsection{Pros and cons}
+
+\paragraph{\nameref{sec:archA}}
+\emph{Pros:} this is the only construction that actually instantiates $X=g(Z)$ as \cref{def:m1,thm:ng}
+state it; the backbone can adapt jointly with the head, in principle giving the encoder more freedom to
+place exactly the information the content/style split wants at the bottleneck; one unified model, no
+separate caching step, no intermediate object standing in for $x$.
+\emph{Cons:} every iteration runs a full ResNet-50 forward and backward pass on raw images -- hours,
+not minutes, in your own experience -- while the M1 estimator itself is still being iterated (the
+five open items closing \cref{app:code}: $u$-dependent offset/mean, per-coordinate mechanisms, the
+sink-freezing test, the optimizer overlap, the dead code), so every one of those iterations would
+carry the full backbone cost; the loss (\mbox{reconstruction + KL + sparsity}) has no term that 
+specifically rewards keeping location information, so end-to-end gradient pressure can push the backbone 
+to discard exactly the style-relevant cues $Z_s$ is supposed to capture; two learning problems with
+different dynamics -- representation learning and causal/structural discovery (Adam on most
+parameters, a separate SGD gate optimizer on the adjacency matrix, \cref{app:code}) -- are coupled
+through shared backbone gradients, harder to diagnose than training the small MLPs alone; only three
+training locations, so fine-tuning the whole backbone risks overfitting its features to those three
+sites rather than to the location-invariant/location-varying split M1 assumes; and even here, nothing
+guarantees the backbone itself is injective (any convolutional network with pooling generically is
+not) -- end-to-end training only supplies gradient \emph{pressure} toward retaining what reconstruction
+needs, not a proof that it does.
+
+\paragraph{\nameref{sec:archB}}
+\emph{Pros:} iteration is minutes rather than hours, which matters given how much of the M1 estimator
+is still design rather than implementation. Extraction is a single pass per image, cached once;
+everything downstream is plain backprop on $\sim\!3000$-dim vectors, cheap to re-run many times over.
+\Cref{app:probe}'s linear-probe diagnostics give a cheap, checkable precondition test -- whether
+species/location information survives at all in $\tilde x$ -- before committing to this heuristic for a
+given backbone; passing that check narrows candidates but, as \cref{sec:archB:gap} explains, does not
+establish that stage 3's fitted model bears any proven relationship to the true $(Z_c,Z_s,\Gc)$.
+\emph{Cons:} \cref{sec:archB:gap} is the central one and subsumes the more specific concerns below --
+this option does not implement \cref{def:m1,thm:ng} at all, and no identifiability result in this note
+applies to it. More specifically: a hard ceiling set by the backbone -- whatever style/location
+information is not present in $\tilde x$, even after BN-only recalibration, cannot be recovered by any
+downstream causal method; $\tilde x$ is not shaped by the M1 reconstruction objective itself, so subtle
+style cues a jointly-trained encoder might have preserved for reconstruction's sake could be missing;
+changing the layer(s), pooling, or backbone means re-extracting and re-caching the whole table (cheap,
+but a step that end-to-end training does not need).
+
+\subsection{Recommendation}
+\label{sec:rec}
+Use \nameref{sec:archB} first, but as a heuristic, not as a theory-matching choice:
+\cref{sec:archB:gap} means nothing in this note guarantees it recovers anything. The reasons to start
+there are practical only. First, iteration speed: \cref{app:code} closes with five concrete open
+changes to the reference implementation, each of which still needs to be tried and likely revised,
+which is only practical at minutes per run rather than hours. Second, it decouples backbone selection
+(checkable once, cheaply, via \cref{app:probe}) from estimator design (iterated many times), so a bad
+backbone choice does not have to be discovered by watching the M1 estimator itself fail to converge.
+Third, \nameref{sec:archA} does not automatically avoid the injectivity problem either -- any
+convolutional backbone with pooling is generically non-injective regardless of how it is trained -- so
+paying its much higher cost does not, by itself, buy a proof that the resulting model matches
+\cref{def:m1}; it only removes the specific, additional substitution of $\tilde x$ for $x$ that
+\cref{sec:archB:gap} describes, restoring $x$ as the reconstruction target the theorem is actually
+about.
+
+Given this, treat \nameref{sec:archB} as an exploratory, cheap-to-iterate first pass -- useful for
+developing and debugging the prior/graph design of \cref{sec:use} -- and \nameref{sec:archA} as the one
+construction whose relationship to \cref{def:m1,thm:ng} this note can actually state precisely: to be
+used once the design stabilizes enough to justify its cost, and to check whether conclusions reached
+under \nameref{sec:archB} survive when $x$, rather than $\tilde x$, is reconstructed.
+
+\subsection{Pretraining objective for the backbone: supervised vs.\ self-supervised}
+\label{sec:pretrain}
+What matters for M1 is not raw discriminative accuracy on ImageNet classes but whether the embedding
+still contains \emph{both} kinds of signal the split needs to separate afterward: content (species,
+time of day) and style (location/camera cues). This choice matters most for \nameref{sec:archB}, where
+whatever the backbone discards is discarded permanently -- stage 3 never touches $\mathrm{BB}$ again.
+Under \nameref{sec:archA} the same choice still matters as the initialization the end-to-end
+fine-tuning starts from, though there gradient pressure from the M1 loss can, in principle but without
+guarantee, partially recover discarded signal. If either kind of signal is missing after pretraining
+(and, for \nameref{sec:archB}, after BN-only recalibration), no downstream causal machinery in
+\cref{app:code} can recover it -- this is exactly the feature-extraction ceiling noted as a con of
+\nameref{sec:archB} above (\cref{sec:archB:gap}).
+
+\paragraph{Supervised ImageNet pretraining.}
+The objective is cross-entropy on object categories that do not correlate with camera exposure,
+background statistics, or viewpoint, so nothing in the loss rewards keeping that information;
+supervised features are, generically, pushed toward invariance to exactly this kind of within-class
+nuisance variation. For M1 this is close to the worst case among the candidates: the pretraining
+objective actively works against keeping the style signal the style block needs.
+
+\paragraph{Self-supervised: SimCLR, MoCo v2, MoCo v3, SimSiam.}
+All four train invariance to a shared, standard augmentation recipe -- random-resized crop, color
+jitter, occasional grayscale, Gaussian blur, horizontal flip -- rather than invariance to a fixed
+label set. What differs between them is the loss and the negative-pair mechanics (InfoNCE with a
+large batch for SimCLR; a momentum encoder plus a memory queue for MoCo v2; a momentum encoder plus a
+predictor without a memory queue for MoCo v3; a predictor with stop-gradient and no negatives at all
+for SimSiam), which mainly affects training stability and representation quality for the downstream
+discriminative task, not \emph{which} low-level factors get suppressed. So there is no a priori
+reason to expect any one of the four to retain systematically more or less location/style information
+than the others. Two caveats, both empirical rather than settled by the choice of method: (a) color
+jitter and blur do push toward suppressing some of the brightness/exposure cues that matter for
+time-of-day/style in TI, less aggressively than a labeled cross-entropy objective but not zero; (b)
+none of the four ever see location or time-of-day labels during pretraining, so whatever style signal
+survives is incidental to the augmentation recipe, not something the objective was built to preserve.
+
+\paragraph{Recommendation.}
+Prefer self-supervised pretraining over supervised, generically, since supervised is the one option
+whose objective actively works against what M1 needs. Among SimCLR, MoCo v2, MoCo v3 and SimSiam
+there is no first-principles reason to prefer one for style preservation; choose empirically, using
+the linear-probe step of \cref{app:probe} (species accuracy plus within-species location accuracy on
+cached features) over whichever of the four you already have trained, and keep the supervised
+ResNet-50 only as a baseline/comparison point rather than a primary candidate.
+
+\subsection{Verification of Recommendations}
+\label{sec:verify}
+Before investing in \nameref{sec:archB} for a given backbone, run the test outlined in \cref{app:probe}
+to compare candidates. Per \cref{sec:archB:gap}, a pass there rules out only the worst case -- a
+backbone that has discarded species or location information outright -- it does not establish that the
+backbone, or its composition $\mathrm{BB}\circ g$ with the true mixing, is close to the injective map \cref{thm:ng} requires, and no diagnostic in this note checks that directly. \Cref{sec:archA} needs no equivalent gate, since it does not introduce $\tilde x$ or $\mathrm{BB}$ as a separate, unexamined step in the first place.

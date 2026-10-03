@@ -1,0 +1,160 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
+
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
+\usepackage[capitalise,nameinlink]{cleveref}
+\usepackage{caption}
+\captionsetup[figure]{labelfont=bf, textfont=it} % Optional: Bolds "Figure 1"
+\usepackage{float}
+\usepackage{fnpct} %moves footnote marks after following punctuation (comma or full stop)
+
+% ---------- theorem-like environments ----------
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{proposition}{Proposition}
+\newtheorem{example}{Example}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+\newtheorem{theorem}{Theorem}
+
+\crefname{assumption}{Assumption}{Assumptions}
+\crefname{proposition}{Proposition}{Propositions}
+\crefname{definition}{Definition}{Definitions}
+\crefname{example}{Example}{Examples}
+\crefname{remark}{Remark}{Remarks}
+\crefname{theorem}{Theorem}{Theorems}
+\crefname{appendix}{Appendix}{Appendices}
+\Crefname{appendix}{Appendix}{Appendices}
+
+% ---------- macros ----------
+\newcommand{\PA}{\mathrm{PA}}
+\newcommand{\sur}{\mathrm{sur}}
+\newcommand{\Sk}{\mathrm{Sk}}
+\newcommand{\Lk}{\mathcal{L}}
+\newcommand{\Mk}{\mathcal{M}}
+\newcommand{\D}{\mathcal{D}}
+\newcommand{\E}{\mathcal{E}}
+\newcommand{\G}{\mathcal{G}}
+\newcommand{\Gc}{\mathcal{G}_c}
+\newcommand{\Cset}{\mathcal{C}}   % values of the observed variable C=(Y,T)
+\newcommand{\Yset}{\mathcal{Y}}   % species values
+\newcommand{\Tset}{\mathcal{T}}   % time-of-day values
+\newcommand{\Lset}{\mathcal{L}}   % locations
+\newcommand{\Rset}{\mathcal{R}}   % style cells r=(t,e)
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Nn}{\mathcal{N}}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+
+\title{Applying the general-environment causal representation learning of Ng et al.\\
+to camera-trap domain generalization:\\
+model, assumptions and environment requirements}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+% must come after \maketitle which resets the counter
+\setcounter{footnote}{1} % skip first symbol
+\renewcommand{\thefootnote}{\fnsymbol{footnote}} % switch fn marks to symbols
+\input{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\input{setting_notation}
+
+% =====================================================================
+\input{model_m1}
+
+% =====================================================================
+\input{theory_of_ng}
+
+% =====================================================================
+\input{m1_in_ng}
+
+% =====================================================================
+\input{env_count}
+
+% =====================================================================
+\input{estimate_unseen_locs}
+
+% =====================================================================
+\input{vae_for_m1}
+
+% =====================================================================
+\input{pseudo_injective_estimation}
+
+% =====================================================================
+\input{assumptions_limitations}
+
+% =====================================================================
+\newpage
+\appendix
+\crefalias{section}{appendix}
+\input{app_noise_and_env}
+\newpage
+
+% ---------------------------------------------------------------------
+\input{app_switching_to_heteroscedastic}
+\newpage
+
+% ---------------------------------------------------------------------
+\input{app_ng_reference_impl}
+\newpage
+
+% ---------------------------------------------------------------------
+\input{app_linear_probe}
+\newpage
+
+\addtocontents{toc}{%
+  \protect\addvspace{1em}%
+  \protect\noindent\textbf{Retired Material}\protect\par
+}
+
+\begin{tikzpicture}[remember picture,overlay]
+\node[
+  draw,
+  anchor=center,
+  text width=0.92\textwidth,
+  align=center
+] at (current page.center) {%
+  \textcolor{red}{\bfseries\Large Retired: \cref{sec:flow,app:irevnet} are not used.}
+
+  \vspace{0.5em}
+
+  \textcolor{red}{\bfseries
+  An exactly invertible (or injective) flow head cannot reduce dimension: its output is
+  forced to stay at least as large as its input (\cref{sec:flow:motivation,sec:flow:injective}), whereas
+  M1 needs a $\sim\!10$-dimensional latent, not one of size $150{,}528$ or larger. The one flow family that
+  can reduce dimension while staying exactly injective (rectangular flows, \cref{sec:flow:injective}) is
+  unproven above CIFAR-10 scale. This premise -- a dimension-preserving invertible backbone -- was therefore
+  the wrong shape for M1 from the start, and the approach was parked before implementation, not because of
+  a bug or a failed experimental run. \Cref{sec:pseudoinj} replaces it with a pair of pseudo-injective
+  networks (IN-VAE $+$ BL-VAE) that do reduce dimension, at the cost of only approximate, bounded --
+  rather than exact -- injectivity.}
+};
+\end{tikzpicture}
+
+\newpage
+
+% =====================================================================
+\input{flow_based_estimation}
+\newpage
+
+% ---------------------------------------------------------------------
+\input{app_irevnet_impl}
+\newpage
+
+% =====================================================================
+\input{biblio}
+
+\end{document}

@@ -1,0 +1,106 @@
+\section{The linear-probe backbone-selection diagnostic}
+\label{app:probe}
+
+This appendix details the linear-probe step referred to in \cref{sec:pretrain} for choosing among
+backbone candidates (the SSL-pretrained ResNets, the supervised ResNet-50 baseline) and among BN-only
+recalibration variants, before any M1 machinery is trained. It is relevant specifically to
+\nameref{sec:archB} (\cref{sec:archB:gap}): \nameref{sec:archA} does not introduce a separate, frozen
+$\tilde x=\mathrm{BB}(x)$ in the first place, so there is nothing here for it to check. The question
+this probe answers is narrow, deliberately not causal, and -- this is worth stating plainly given
+\cref{sec:archB:gap} -- deliberately not about the property \cref{thm:ng} actually needs from
+$\mathrm{BB}\circ g$: given a frozen, cached embedding $\tilde x$, is content information linearly
+readable, and does location/style information survive at all. Linear readability is a much weaker
+property than the injectivity \cref{sec:archB:gap} identifies as what the identifiability argument
+requires; a backbone can pass both probes below while still collapsing many distinct $(Z_c,Z_s)$ onto
+embeddings a linear classifier can separate but a decoder cannot invert. This appendix is therefore a
+feature-extraction sanity check that gates whether \nameref{sec:archB}'s heuristic is worth attempting
+for a given backbone at all, not a substitute for the M1 estimator itself, and not evidence that the
+heuristic's output, if it converges, bears any proven relationship to the true $(Z_c,Z_s,\Gc)$.
+
+\subsection{Why a linear probe, and why two of them}
+A linear probe -- fitting a plain linear classifier on top of a frozen embedding, with no
+backpropagation into the backbone -- tests what is already linearly present in the features, rather
+than what a sufficiently powerful downstream model could eventually extract from them. This matches
+the concern raised about \nameref{sec:archB} in \cref{sec:archB:gap}: whatever is not present in 
+the cached embedding is a hard ceiling that no downstream causal machinery can recover
+(\cref{sec:archB}, cons of \nameref{sec:archB}). The probe is run once per backbone/BN-variant 
+candidate, on cached features only, before committing to \nameref{sec:archB}'s heuristic for that
+candidate.
+
+Two separate probes are needed because content and style are different questions:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Species accuracy.} Input: the cached embedding of an image (layer3 pooled concatenated
+      with the final pooled layer, per \cref{sec:archB}). Label: species (10 classes). This checks that
+      content information survived extraction at all; the target is high accuracy.
+\item \textbf{Within-species location accuracy.} Input: the same cached embedding, restricted to images
+      of one species at a time (i.e.\ conditioned on species). Label: training location
+      (L38/L43/L46). Species and location are correlated in the raw data, so an unconditional
+      location probe could score well purely by piggybacking on species and would say nothing about
+      style; conditioning on species asks the real question, whether the embedding still separates
+      locations once species is held fixed. The target here is not high accuracy but accuracy clearly
+      above chance -- chance-level would mean the backbone, even after BN-only recalibration, erased
+      the location/style cues the style block $Z_s$ needs.
+\end{itemize}
+
+\subsection{Data split}
+\label{app:probe:split}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{L100 is never used by either probe}, for fitting or for scoring. This diagnostic selects
+      a backbone using only train-location data; L100 stays reserved for evaluating the eventual M1
+      pipeline, consistent with its role everywhere else in this note.
+\item \textbf{Within L38/L43/L46, use stratified $k$-fold cross-validation}
+	\footnote{``Stratified jointly by species and location" means the folds are built to preserve in 
+	each fold the proportions of each species$\times$location combination in the full dataset, so every 
+	fold has a representative slice of, say, ``raccoon at L43" and not just ``raccoon" in general. That 
+	matters specifically for the within-species location probe: since it's scored per species, you need 
+	each species to have reasonable location coverage in every fold, or some folds simply can't produce 
+	a meaningful location accuracy for the rarer species.}
+	(e.g.\ $k=5$), stratified
+      jointly by species and location, rather than a single train/test split. Two reasons a single
+      split is not enough here: species classes are imbalanced (raccoon dominant; bird/dog/squirrel
+      data-limited), so one random split risks leaving too few examples of the rare classes in the
+      held-out fold; and the within-species location probe is evaluated per species, so each
+      species$\times$location cell is smaller than the marginal class counts and some cells are already
+      sparse. Cross-validation uses all train-location data for both fitting and scoring across folds
+      and gives a less noisy estimate for comparing candidates than a single split would.
+\item In every fold, the linear classifier is fit on the training portion of that fold only and scored
+      on the held-out portion; no image contributes to both fitting and scoring for the same fold.
+\end{itemize}
+
+\subsection{Metric}
+Report \textbf{macro accuracy} (per-class accuracy, averaged across classes) for both probes, not raw
+accuracy, for the same reason macro accuracy is the chosen metric for the main species classifier
+(\cref{sec:setting}): with raccoon dominant and bird/dog/squirrel data-limited, raw accuracy would be
+dominated by the majority class and could mask whether rarer species, or rarer
+species$\times$location cells, are actually separable in the embedding. For the within-species probe,
+compute macro accuracy over locations within each species, then average over species (weighting
+species equally, not by sample count), so that a species with few images does not vanish from the
+result.
+
+\subsection{Procedure}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+\item For each candidate (backbone $\times$ BN-recalibration variant), take the cached embeddings for
+      all train-location images (\cref{sec:archB}), excluding L100.
+\item Run stratified $k$-fold cross-validation (\cref{app:probe:split}) with a linear classifier
+      (e.g.\ multinomial logistic regression) to get:
+      \begin{itemize}[leftmargin=1.3em]
+      \item macro species accuracy, label $=$ species, over all train-location images;
+      \item macro within-species location accuracy, label $=$ location, computed separately within
+            each species and averaged over species.
+      \end{itemize}
+\item Record both numbers per candidate.
+\end{enumerate}
+
+\subsection{Decision rule}
+Prefer the candidate with high macro species accuracy and macro within-species location accuracy
+clearly above chance (chance being $1/|\Lset_t|$ within each species' available locations, averaged
+the same way as the metric). A candidate that is high on species accuracy but at chance on location
+accuracy is discarded regardless of species accuracy: per the feature-extraction ceiling argument of
+\cref{sec:archB}, no amount of M1 estimator design can recover style information that the backbone
+never retained. Among candidates that pass both checks, this diagnostic does not by itself rank them
+further; \cref{sec:pretrain} notes there is no first-principles reason to prefer one self-supervised
+pretraining method over another for style preservation, so ties are broken by whichever gives the best
+combined result empirically. In every case, a pass narrows candidates to those that plausibly retain
+enough signal for \nameref{sec:archB}'s heuristic to have a chance; per \cref{sec:archB:gap}, it does
+not certify that any candidate yields a $\mathrm{BB}\circ g$ close enough to injective for
+\cref{thm:ng} to apply, since no test proposed here checks that property directly.

@@ -1,0 +1,224 @@
+\section{What the reference implementation of Ng et al. actually computes}
+\label{app:code}
+
+Ng et al.\ release a toy implementation alongside \cite{ng2025} in \cite{ngimpl} (the \texttt{chain}/
+\texttt{fork} examples
+of \cref{tab:examples,tab:paper} are the cases it ships with). This appendix records, file by file and
+method by method, what that code computes, and where it implements something narrower than
+\cref{eq:anm,eq:hnm} or than the estimator sketched in \cref{sec:use}. The point of doing this precisely 
+is that the M1 prior is planned as a modification of this code (\cref{sec:use}), so every place where 
+the code falls short of the paper is a place that modification has to add something, not just relabel 
+it. Four files are covered: \texttt{networks.py}, \texttt{trainer.py}, \texttt{main.py}, 
+\texttt{utils.py}.
+
+\subsection{Network structure (\texttt{networks.py})}
+Class \texttt{VAE} holds six trainable pieces:
+\begin{itemize}[noitemsep,label={-}]
+\item \texttt{encoder\_mu} and \texttt{encoder\_logvar} (both
+\texttt{nn.Sequential} MLPs mapping \texttt{input\_dim} to \linebreak \texttt{latent\_dim}, 
+called on $x$);
+\item a \texttt{decoder} (\texttt{latent\_dim} to \texttt{input\_dim});
+\item a \texttt{mean\_net} (\texttt{latent\_dim} to $1$);
+\item a \texttt{log\_var\_net} (\texttt{n\_domains} to \texttt{latent\_dim});
+\item a \texttt{domain\_embedding} (\texttt{nn.Embedding(n\_domains, n\_domains)});
+\item and \texttt{adj\_mat}, an instance of class \texttt{ADJMatrix} holding the single learnable parameter \linebreak \texttt{adj\_matrix} of shape \texttt{latent\_dim}$\,\times\,$\texttt{latent\_dim}.
+\end{itemize}
+
+In \texttt{VAE.forward}, the line \texttt{xd = torch.cat([x, d], dim=1)} is immediately followed by
+\texttt{xd = x}, which overwrites it. So although the code concatenates $x$ and the one-hot domain $d$,
+that concatenated tensor is never used: \texttt{encoder\_mu} and \texttt{encoder\_logvar} see only $x$.
+
+\subsection{Mapping of variable names and paper's symbols}
+\begin{table}[ht]
+\centering
+\caption{Mapping of implementation's variable names and paper's symbols}
+\label{tab:imp2symb}
+\begin{tabular}{@{}ll@{}}
+\toprule
+implementation & paper\\
+\midrule
+\texttt{domain\_embedding} & $u$ \\
+\texttt{mu=encoder\_mu(x)} & $\mu(q^{(u)}(\hat Z \mid X=x))$\footnotemark
+\xdef\fnmarkX{\number\value{footnote}}\\
+\texttt{logvar=encoder\_logvar(x)} & $\log\sigma^2(q^{(u)}(\hat Z \mid X=x))$\footnotemark[\fnmarkX] \\
+\texttt{z=sample(Normal(mu,exp(0.5*logvar)))} & $z$ \\
+\texttt{q\_dist} & $q^{(u)}(\hat Z \mid X=x)$\footnotemark[\fnmarkX] \\
+\texttt{log\_q\_z\_x} & $\log(q^{(u)}(\hat Z=z \mid X=x))$\footnotemark[\fnmarkX] \\
+\texttt{adj\_mat} & $\hat A$ \\
+\texttt{mask\_z\_rep=adj\_mat\_rep*z\_rep} & $\hat A * \hat Z$ \\
+\texttt{cond\_mean=mean\_net(mask\_z\_rep)} & $\mu\bigl(p(Z\mid \hat A*\hat Z)\bigr)$ \\
+\texttt{prior\_log\_var=log\_var\_net(domain\_embedding)} & $\log\sigma^2(p^{(u)}(Z))$ \\
+\texttt{z\_dist} & $p^{(u)}(\hat Z)$ \\
+\texttt{log\_p\_z} & $\log(p^{(u)}(\hat Z=z))$ \\
+\texttt{x\_hat=decoder(z)} & $\hat x$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+\footnotetext[\fnmarkX]{With respect to \cite{ng2025}'s own notation this is correct: the paper
+writes the recognition model as $q^{(u)}(\hat Z\mid X)$ (Section~4.3). It is not correct as a description of
+the code, however -- as \cref{app:code:domain} notes below, \texttt{encoder\_mu} and \texttt{encoder\_logvar}
+take only $x$, never the domain, so in this implementation $q$ does not actually depend on $u$. The mismatch
+is between the paper's stated model and what \texttt{VAE.forward} computes, not an error in how the table
+renders the paper's own symbols.}
+
+\subsection{Where the domain enters, and where it does not}
+\label{app:code:domain}
+The only place the domain influences the forward pass is
+\begin{quote}
+\begin{flushleft}
+\texttt{domain\_embedding = self.domain\_embedding(d.argmax(dim=1).squeeze())} \\
+\texttt{prior\_log\_var = self.log\_var\_net(domain\_embedding)}
+\end{flushleft}
+\end{quote}
+in \texttt{VAE.forward}. So the prior variance is a function of $u$ alone, which is exactly
+$\sigma_i^{(u)}$ of \cref{eq:anm} (constant across nodes only in the sense that all $n$ coordinates of
+\texttt{prior\_log\_var} come from one shared network; each coordinate of the output can still differ).
+The encoder ($q(z\mid x)$) does not see the domain, which the paper does not require either.
+
+The prior \emph{mean}, \texttt{cond\_mean}, is produced by \texttt{mean\_net} from
+\texttt{mask\_z\_rep} -- the sampled $z$ of the same image, masked by the adjacency matrix -- and
+nothing else. There is no domain input anywhere on this path, and there is no separate offset term:
+\cref{eq:anm} allows $f_i^{(u)}$ itself to change with $u$ (in the general theory) and additionally allows a
+mean $\mu_i^{(u)}$ on the noise (\cref{app:eps}); the code has neither a $u$-dependent $f$ nor a free-standing
+$\mu^{(u)}$. Only the noise scale changes with $u$. In the language of \cref{app:eps} this is the ANM of
+\cref{eq:anm}, not the HNM of \cref{eq:hnm} (the scale does not depend on the parent values, only on $u$),
+and moreover it is a restricted ANM in which the mechanism $f$ itself is domain-free.
+
+\subsection{The mechanism is shared across latent coordinates, not only across domains}
+\texttt{mean\_net} is applied identically to every latent coordinate: \texttt{z\_rep} is built by
+repeating $z$ once per coordinate, masked by \texttt{adj\_mat}, reshaped to
+\texttt{(len(x)*latent\_dim, latent\_dim)}, and passed through the \emph{same} \texttt{mean\_net} weights
+for every row; the result is reshaped back to one scalar mean per coordinate. So the code implements a
+single shared function $f(\PA(Z_i))$ used for every $i$, not a distinct $f_i$ per coordinate as in
+\cref{eq:content}. This is a stronger restriction than domain-freeness: even ignoring $u$, node identity
+$i$ does not enter $f$ except through which entries of $z$ survive the mask.
+
+\subsection{Loss terms (\texttt{Trainer.step}, \texttt{trainer.py})}
+\label{app:code:lossterms}
+\begin{itemize}
+\item \texttt{loss\_kl} is computed from \texttt{dist.Normal} objects for $q(z\mid x)$ (mean/var
+\texttt{mu}/\texttt{logvar}) and the prior (mean/var \texttt{cond\_mean}/\texttt{prior\_log\_var}), 
+as
+$$
+\texttt{(log\_q\_z\_x - log\_p\_z).sum(dim=-1).mean()}
+$$
+at the one sampled $z$ -- a single-sample Monte 
+Carlo estimate of the KL term of the ELBO, not an analytic Gaussian KL formula and not a direct 
+implementation of the derivative vectors $\vect\tau$, $\vect w$ of \cref{sec:ng}.
+\item \texttt{loss\_rec} is \texttt{F.mse\_loss(xhat, x)}. Ng et al. assume that  
+the posterior $q^{(u)}(\hat Z \mid X)$ is a multivariate Gaussian distribution, where its mean and 
+diagonal covariance are output by an encoder that is modeled as a MLP. The decoder, also modeled as an 
+MLP, outputs the mean of $p^{(u)}(X \mid \hat Z)$ that is assumed to be a multivariate Gaussian 
+distribution, with a pre-specified variance, and thus the first term of 
+$\Lk_{\mathrm{elbo}} = \mathbb{E}_{q^{(u)}(\hat Z \mid X)}[(\log(p^{(u)}(X \mid \hat Z))]$ reduces to 
+the reconstruction error of estimated data $\hat x$ from estimated latent variables  $\hat Z$ 
+w.r.t the ground truth $x$ because for a constant variance $\sigma^2: \log p(x|z) = -\lVert x - 
+\hat x\rVert^2 / (2\sigma^2) - (d/2)\log(2\pi\sigma^2)$. 
+The second term doesn't depend on $\hat x$ -- it's a constant 
+with respect to the network's parameters. So maximizing this log-likelihood (equivalently, minimizing 
+its negative) is, for optimization purposes, identical to minimizing $\lVert x - \hat x\rVert^2$ -- 
+literally MSE, up to the constant scale factor $1/(2\sigma^2)$, which optimization is the same. That 
+scale factor is exactly 1 when $\sigma^2=1$ (``unit variance''), i.e.\ a fixed-(unit-)variance Gaussian 
+reconstruction term.
+\item \texttt{loss\_sparsity} is $\mathrm{sum}\bigl((I+A)^\top(I+A)\bigr)$ computed on
+\texttt{current\_adj\_mat} -- the still-unresolved sub-block returned by 
+\texttt{VAE.get\_adj(current=True)}
+-- which is the sparsity penalty referred to generically in \cref{sec:use} as ``the sparsity ... 
+penalties of \cite{ng2025}''.
+\item Neither the hard constrain $\mathcal{L}_{moral} = 0$ nor the regularized version are 
+implemented.
+
+The toy \texttt{chain/fork} examples in \texttt{main.py} hard-code the causal order via \linebreak
+\texttt{torch.tril(diagonal=-1)}, so the search space is already just ``which lower-triangular entries 
+are nonzero.'' With the order fixed and only 3 latents, sparsity alone is probably enough pressure to 
+recover the two toy graphs -- the moral-graph term exists in the paper mainly to help pin down the 
+Markov network in harder/larger cases where sparsity alone is ambiguous (e.g. distinguishing a moral 
+edge from a weak direct edge).
+
+Probably can't rely on sparsity alone once the content graph is non-trivial (M1 candidate graphs go up 
+to 4-5 nodes with real ambiguity), so addition of this term becomes mandatory.
+\end{itemize}
+
+\subsection{Sink-node freezing is a mask heuristic, not the derivative test of the paper}
+\texttt{VAE.find\_sinknodes\_and\_fix} (called from \texttt{main.py} every \texttt{check\_epoch} epochs) reads
+\texttt{current\_adj = self.get\_adj(current=True)} and, for each column $i$ with
+\texttt{current\_adj[:, i].sum() == 0}, freezes row and column $i$ into \texttt{sure\_mask}/\texttt{sure\_adj},
+i.e.\ declares $i$ a sink of the \emph{remaining} subgraph. \texttt{VAE.get\_adj} then returns, for frozen
+entries, the stored \texttt{sure\_adj} value, and for unfrozen entries the current learnable value.
+
+The values being thresholded come from \texttt{ADJMatrix.forward}:
+$$
+\texttt{out = (self.adj\_matrix > 0.5).float() - self.adj\_matrix.detach() + self.adj\_matrix},
+$$
+a straight-through hard threshold, followed by \texttt{torch.tril(out, diagonal=-1)}. 
+Two consequences worth flagging separately.
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{The sink decision is a trained-mask heuristic, not the score test.} The paper's identifiability
+      argument (\cref{thm:ng}) certifies a sink by the vanishing of
+      $\partial^3\log p^{(u)}/\partial Z_i^2\partial Z_j$ across environments (\cref{sec:ng}). The code instead
+      calls $i$ a sink once gradient descent under \texttt{loss\_sparsity} (plus \texttt{gate\_optim}, below) has
+      driven column $i$ of the thresholded adjacency to zero. Nothing in \texttt{find\_sinknodes\_and\_fix}
+      touches a third derivative of the log-density; the sparsity penalty is a proxy that is hoped to produce
+      the same graph, not a computation of the quantity the theorem is stated in terms of.
+\item \textbf{The causal order is fixed in advance, not searched over.} \texttt{torch.tril(..., diagonal=-1)}
+      forces \texttt{adj\_matrix[i,j]} to be nonzero only for $j<i$, i.e.\ edges can only run from a
+      lower-indexed latent coordinate to a higher-indexed one. The code never searches over permutations of the
+      latent coordinates; it assumes the causal order coincides with the index order from the start, so the
+      learning problem is restricted to finding \emph{which} lower-triangular entries are nonzero, not to
+      finding an order as well.
+\end{itemize}
+
+\subsection{Two optimizers, and a filter that does not do what it appears to \texorpdfstring{\newline}{ } (\texttt{Trainer.\_\_init\_\_})}
+
+\texttt{gate\_params} is built as the parameters whose name contains \texttt{'adj\_mat'}, optimized by
+\texttt{gate\_optim} (\texttt{SGD}, lr $10^{-3}$, momentum $0.9$). \texttt{nogate\_params} is built as
+\texttt{[p for n, p in ... if n not in ['adj\_mat']]}, intended to be ``everything except the adjacency'',
+optimized by \texttt{optim} (\texttt{Adam}, lr $10^{-3}$). But \texttt{named\_parameters()} reports the
+adjacency parameter as \texttt{'adj\_mat.adj\_matrix'}, not \texttt{'adj\_mat'}, so the test
+\texttt{n not in ['adj\_mat']} is true for it as well. The adjacency parameter therefore lands in
+\emph{both} lists and is stepped by both optimizers on every call to \texttt{Trainer.step}. Nothing in the
+code or in \cite{ng2025} states that this double update is intended.
+
+\subsection{Dead code (\texttt{networks.py})}
+\begin{itemize}[noitemsep,label={-}]
+\item \texttt{sample\_gumbel} and \texttt{gumbel\_sigmoid} are defined but never called anywhere in the 
+forward path; the adjacency binarization actually used is the direct straight-through threshold inside 
+\texttt{ADJMatrix.forward} described above, not a Gumbel-based relaxation. 
+\item \texttt{y\_rep}, built in \texttt{VAE.forward} from the domain $d$, is computed and never used 
+afterward. 
+\item \texttt{weights\_init} is defined but never applied; 
+\item \texttt{VAE.\_\_init\_\_} contains the commented-out line
+\begin{quote}
+\texttt{\# self.prior\_mean\_net.apply(weights\_init('xavier'))}
+\end{quote}
+so custom initialization was evidently intended at some point, but the model as shipped trains from 
+PyTorch's default initialization.
+\end{itemize}
+
+\subsection{What the driver script does and does not check (\texttt{main.py}, \texttt{utils.py})}
+\texttt{ground\_truth} adjacency matrices are hard-coded for the \texttt{chain} and \texttt{fork} cases, but
+are never compared numerically against the learned graph; the only graph output in the training loop is
+\texttt{print(trainer.model.get\_adj(soft=True))}, for visual inspection. \texttt{compute\_mcc}
+(\texttt{utils.py}) evaluates recovery of the \emph{latent values} against the known ground-truth latents
+(Pearson/Spearman correlation under a Hungarian assignment), which is a check on $\hat Z$, not on $\hat{\G}$.
+\texttt{should\_stop} in \texttt{main.py} is set entirely by whether \texttt{find\_sinknodes\_and\_fix} has
+frozen every node (\texttt{nonzero\_col == 0} inside that method); nothing in the loop counts, or verifies,
+how many linearly independent environments are actually available, so \cref{as:1,as:2} are assumed of the
+toy data generator rather than checked by the code.
+
+\subsection{Summary: what this means for building the M1 prior}
+Against the estimation sketch in \cref{sec:use}, the pieces that still need to be added rather than reused
+as-is are:
+\begin{enumerate}[label=(\roman*),leftmargin=2.2em]
+\item give the prior mean a domain input, split by block (content on $c=(y,t)$, style on $r=(t,e)$), since
+      \texttt{mean\_net} currently has none;
+\item decide, deliberately, whether M1's content mechanism should be shared across the $n_c$ coordinates (as
+      \texttt{mean\_net} does) or given per-coordinate identity -- the code's choice is a simplification, not a
+      constraint of the theory;
+\item decide whether to keep the mask/sparsity-driven sink freezing of
+      \texttt{find\_sinknodes\_and\_fix}, or move it closer to the derivative-based test that
+      \cref{prop:m1req} is actually stated in terms of;
+\item fix, or knowingly keep, the \texttt{nogate\_params} overlap in \texttt{Trainer.\_\_init\_\_};
+\item drop \texttt{gumbel\_sigmoid}, \texttt{sample\_gumbel}, \texttt{y\_rep}, and the dead
+      \texttt{torch.cat([x, d])} line when scaffolding the M1 code off this file.
+\end{enumerate}

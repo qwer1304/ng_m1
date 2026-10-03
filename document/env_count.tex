@@ -1,0 +1,70 @@
+\section{The environment count: paper's formula vs the definition}
+\label{sec:count}
+
+Ng et al.\ state that the number of environments needed is (at least) 
+\cite[subsection ``Number of environments'']{ng2025}
+\begin{equation}
+N_{\mathrm{paper}}=3n+3|\mathcal{E}(\Mk_Z)|+|\Delta(\Mk_Z)|-2|\Sk(\G_Z)|+1 .
+\label{eq:paper}
+\end{equation}
+\Cref{as:2} asks for $L+1$ values of $u$, with $L$ the length of $\vect w$. Counting the entries of
+\cref{eq:w} directly gives \cref{eq:L}, hence a requirement of $L+1$ environments, and
+\begin{equation}
+N_{\mathrm{paper}}-(L+1)=\sum_{v\in\Sk(\G_Z)}\bigl(\deg_{\Mk_Z}(v)-1\bigr).
+\label{eq:diff}
+\end{equation}
+So the formula in the paper agrees with the count from the definition exactly when the total degree of the
+sinks in the Markov network equals the number of sinks; in particular this holds when every sink has
+exactly one edge. Otherwise the two differ by one for each unit of excess degree of a sink (positive
+difference) or for each isolated sink (negative difference).
+
+\begin{table}[ht]
+\centering
+\caption{Count according to formula in \cref{eq:paper} versus the count $L+1$ from the definition of $\vect w$.}
+\label{tab:paper}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+graph & $n$ & sinks (degree) & $L$ & $L+1$ & $N_{\mathrm{paper}}$\\
+\midrule
+single isolated node                 & 1 & 1 (0) & 2  & 3  & 2 \\
+chain $Z_1\to Z_2\to Z_3$             & 3 & 1 (1) & 13 & 14 & 14\\
+collider $Z_1\to Z_2\leftarrow Z_3$   & 3 & 1 (2) & 16 & 17 & 18\\
+empty graph on $n$ nodes              & $n$ & $n$ (all 0) & $2n$ & $2n+1$ & $n+1$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As a sanity check, $\vect w$ contains $\vect\tau$, so \cref{as:2} needs at least the
+$2n+|E|+1$ environments of \cref{as:1}. For the empty graph the printed formula gives $n+1<2n+1$,
+which cannot be right; the formula appears to presuppose that sinks have exactly one Markov-network
+edge (for instance, leaf nodes with one parent). I could not find a derivation of \cref{eq:paper} in
+the text; it is stated as a lower bound. For M1 the difference matters because the style latents are
+isolated sinks: the definition gives two entries for each (as in \cref{eq:split}), whereas
+\cref{eq:paper} would charge only one. We therefore use the count from the definition.
+
+\begin{remark}[Reading of the index set]\label{rem:ij}
+The fourth group of $\vect w$ is printed in \cite{ng2025} with the index condition ``$i<j$,
+$\{Z_i,Z_j\}\in\mathcal{E}(\Mk_{Z'})$, $Z_i\notin\Sk(\G_{Z'})$''. Read literally this depends on how the nodes are
+indexed. The paper states that Algorithm~1 outputs the estimated latents in a causal order, and its proof
+of Theorem~1 uses a causal order of the true latents. With indices in a causal order the literal reading
+is well defined. For an edge of the Markov network (the moral graph) the lower-indexed endpoint is either
+the parent in a parent--child edge or a co-parent of a later common child; in both cases it has a child,
+so it is never a sink and the condition $Z_i\notin\Sk$ is redundant. Each edge then contributes exactly
+one entry, $\partial^3\log p/\partial Z_i^2\partial Z_j$ with $i<j$. I do not think this is the intended
+set, for two reasons.
+\begin{enumerate}[label=(\roman*),leftmargin=2em]
+\item Eq.~(7) in the proof of Proposition~2 of \cite{ng2025} contains a term with squared variable
+      $Z_{\alpha(i)}$ for \emph{every} ordered pair $(i,j)$ of adjacent nodes with $Z_{\alpha(i)}$ a non-sink;
+      unlike the neighbouring second-order and triple sums, it has no ``$i<j$''. If both endpoints of an
+      edge are non-sinks, the monomials $(\partial Z_i/\partial\hat Z_l)^2\,\partial Z_j/\partial\hat Z_l$ and
+      $(\partial Z_j/\partial\hat Z_l)^2\,\partial Z_i/\partial\hat Z_l$ have separate coefficients. The
+      argument that each coefficient vanishes rests on the linear independence in \cref{as:2}, so
+      both derivatives must be entries of $\vect w$.
+\item With one entry per edge the length is $L=3n+2|E|+|\Delta|-|\Sk|$, so the number of environments
+      $L+1$ would be $13$ for the chain and $16$ for the collider of \cref{tab:paper}, against $14$ and $18$
+      in the printed formula \cref{eq:paper}. Ordered pairs give $14$ and $17$, matching the printed
+      formula for the chain.
+\end{enumerate}
+I therefore keep ordered pairs and read the ``$i<j$'' in the fourth group as a notational slip. This is my
+reading, not a statement in the paper.
+\end{remark}

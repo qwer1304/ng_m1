@@ -1,0 +1,86 @@
+\section{Switching to the heteroscedastic noise model:\texorpdfstring{\\}{--}suggested sequence}
+\label{app:hnm}
+
+This appendix compares the two models for the content block of M1 and suggests when to switch. The style block
+is unaffected: a style latent has no parents, so its scale cannot depend on parents and the ANM and the HNM
+coincide there.
+
+\subsection{What changes if the content block is an HNM}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Model.} The content mechanism becomes $Z_{c,i}=f_i^{(c)}(\PA)+\sigma_{c,i}^{(c)}(\PA)\,\epsilon_i$
+      with $\epsilon_i$ standard normal, so the noise scale may depend on the values of the parents within a
+      cell $(y,t)$, in addition to depending on $c$. In the ANM the scale depends on $c$ only.
+\item \textbf{Identifiability.} Theorem~2 of \cite{ng2025} gives the same conclusion as \cref{thm:ng}: the
+      graph up to isomorphism, and each latent as a function of itself and its surrounding parents. The
+      assumptions are Assumption~1 and the analogue of \cref{as:2} (Assumption~3 in the paper).
+\item \textbf{Sink property.} By Lemma~2, the third derivatives $\partial^3\log p/\partial Z_i^2\partial Z_j$ of a
+      sink vanish only for $Z_j\notin\PA(Z_i)$. The neighbours of a sink in the Markov network are exactly its
+      parents, so these entries do not vanish, and the sink no longer saves the mixed third-order entries
+      of its edges. The pure third derivative $\partial^3\log p/\partial Z_i^3$ still vanishes for a sink.
+\item \textbf{Length of the vector.} In Assumption~3 the mixed third-order group carries no sink restriction.
+      With the ordered-pair reading of \cref{rem:ij}, every edge contributes two entries, so
+      \begin{equation}
+      L_{\mathrm{HNM}}=3n'+3E+D-|\Sk|=L_{\mathrm{ANM}}+\sum_{v\in\Sk}\deg_{\Mk_{Z'}}(v).
+      \label{eq:LHNM}
+      \end{equation}
+      The paper gives no environment count for the HNM; \cref{eq:LHNM} is my count from the printed
+      definition, under the ordered-pair reading.
+\item \textbf{Estimation.} \cite{ng2025} state that the estimation method is nearly identical to that of
+      the ANM. In the prior of \cref{sec:use}, the scale $\hat\sigma_i^{(u)}$ becomes a function of the
+      parents, $\hat\sigma_i^{(u)}(\hat A_{i,:}\hat Z)$, in addition to $u$.
+\end{itemize}
+
+\subsection{Effect on the budget}
+For the content block with $K_C=20$ values, condition (a) of \cref{prop:m1req} requires $L_c+1\le20$.
+\Cref{tab:hnm} compares the two models for the content graphs of \cref{tab:examples}.
+
+\begin{table}[ht]
+\centering
+\caption{Content-block length $L_c$ under the ANM (\cref{eq:L}) and the HNM (\cref{eq:LHNM}), and whether
+$L_c+1\le K_C=20$.}
+\label{tab:hnm}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+content graph $\Gc$ & $n_c$ & sinks (degree) & $L_{\mathrm{ANM}}$ & $L_{\mathrm{HNM}}$ & ANM fits & HNM fits\\
+\midrule
+empty                              & 9 & 9 (all 0) & 18 & 18 & yes & yes\\
+collider $Z_1\to Z_2\leftarrow Z_3$ & 3 & 1 (2) & 16 & 18 & yes & yes (barely)\\
+chain, 3 nodes                     & 3 & 1 (1) & 13 & 14 & yes & yes\\
+chain, 4 nodes                     & 4 & 1 (1) & 19 & 20 & yes (barely) & no\\
+chain, 5 nodes                     & 5 & 1 (1) & 25 & 26 & no & no\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Suggested sequence}
+\begin{enumerate}[label=\arabic*.,leftmargin=2em]
+\item \textbf{Fit the ANM first.} Use the prior of \cref{sec:use}: the content scale depends on $c=(y,t)$, the
+      style scale on $r=(t,e)$, and neither depends on parent values.
+\item \textbf{Diagnose ANM misspecification.} Three checks, all heuristic.
+      (a) Compare the held-out ELBO of the ANM with that of an HNM prior whose scale depends on the estimated
+      parents; a more flexible model always fits at least as well on the training data, so use held-out data or
+      a penalty.
+      (b) Within each cell $(y,t)$, regress the squared residuals of each estimated content latent on the
+      estimated values of its parents; a clear dependence indicates parent-dependent scale.
+      (c) Check whether the recovered graph is stable across random seeds and between the two priors.
+\item \textbf{Switch only if needed and affordable.} Move to the HNM if the HNM is clearly better in step 2 and
+      the budget allows it, i.e.\ $L_{\mathrm{HNM}}+1\le K_C$ for the chosen content graph
+      (\cref{tab:hnm}); otherwise keep the ANM, or reduce $n_c$ so that the HNM fits.
+\item \textbf{Leave the style block unchanged.} It is isolated, so the two models coincide there.
+\end{enumerate}
+
+\subsection{Why the ANM first}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Smaller budget.} By \cref{eq:LHNM}, the HNM adds the total degree of the sinks to the length of
+      $\vect w$. With about twenty $(y,t)$ values this is decisive for the four-node chain, which fits
+      under the ANM only barely and not at all under the HNM.
+\item \textbf{The ANM already allows what is most likely to matter.} The scale may change with the species and
+      the time of day. What the ANM excludes is dependence of the scale on the values of the other content
+      latents within one cell, a second-order effect.
+\item \textbf{A cleaner sink test.} Under the ANM every third derivative $\partial^3\log p/\partial Z_i^2\partial Z_j$
+      of a sink vanishes, whereas under the HNM this holds only for non-parents.
+\item \textbf{A simpler prior.} The scale is a per-cell parameter and not a function of the parents, so fewer
+      parameters must be estimated per environment.
+\item \textbf{The need can be diagnosed afterwards.} If the residual-scale check finds no dependence on the
+      parents, the switch is unnecessary; hence ``HNM later, if at all''.
+\end{itemize}

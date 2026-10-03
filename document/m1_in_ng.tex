@@ -1,0 +1,167 @@
+\section{M1 inside the framework of Ng et al.}
+\label{sec:apply}
+
+\subsection{Environments}
+An environment is a triple $u=(c,e)=(y,t,e)$; its observed distribution is
+$p^{(u)}(x)=p(x\mid y,t,e)$, which is available because all three indices are observed. In this
+indexing
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+latent block & \shortstack[l]{depends on $u=(y,t,e)$\\only through} & mechanism\\
+\midrule
+content $Z_c$ & $c=(y,t)$ & $f_i^{(c)},\ \sigma_{c,i}^{(c)}$ (soft changes of an unknown DAG)\\
+style $Z_s$ & $r=(t,e)$ & $\mu_j^{(r)},\ \sigma_{s,j}^{(r)}$ (isolated nodes)\\
+\bottomrule
+\end{tabular}
+\end{center}
+so M1 is an instance of the process in \cref{sec:ng} with a particular pattern of which mechanisms
+change: the same DAG $\G=\Gc\,\cup\,\{\text{isolated nodes}\}$ in all environments, Gaussian noise for
+every latent, and $g$ shared.
+
+\subsection{Block structure of the sufficient-change vectors}
+Given $u=(y,t,e)$,
+\[
+\log p^{(u)}(z)=\log p(z_c\mid c)+\sum_{j=1}^{n_s}\log p^{(r)}(z_{s,j}),\qquad c=(y,t),\ r=(t,e).
+\]
+Hence all cross derivatives between the blocks vanish, the Markov network is $\Mk_c$ (the network of
+$\Gc$) plus isolated nodes, and every ancestral set is $Z'=Z'_c\cup Z'_s$. The vector splits:
+\begin{equation}
+\vect w(Z',u)=\bigl(\vect w_c(Z'_c,c),\ \vect b(Z'_s,r)\bigr),
+\qquad \vect b(Z'_s,r)=\Bigl(\tfrac{\partial\log p^{(r)}(z_{s,j})}{\partial z_{s,j}},
+\tfrac{\partial^2\log p^{(r)}(z_{s,j})}{\partial z_{s,j}^2}\Bigr)_{j}.
+\label{eq:split}
+\end{equation}
+An isolated node is a sink with no edges. It is excluded from every third-order group of
+\cref{eq:w}, so a style latent contributes exactly two entries, its first and second derivative. If
+all style latents are in $Z'$, then $|\vect b|=2n_s$. The two blocks are functions of different parts of $u$,
+but both depend on the time of day: $\vect w_c$ on $c=(y,t)$ and $\vect b$ on $r=(t,e)$.
+
+\subsection{What \texorpdfstring{\cref{thm:ng}}{Theorem~\ref*{thm:ng}} of Ng et al. gives for M1}
+The graph $\G$ is recovered up to isomorphism. Every style latent has no parents, hence \linebreak
+\mbox{$\sur(Z_{s,j};\G)=\varnothing$}, so each estimated style latent is a component-wise (invertible)
+function of one true style latent. Every content latent is a function of itself and its surrounding
+parents, all of which lie in the content block. Consequently:
+\begin{center}
+\fbox{\emph{no estimated latent mixes content and style.}}
+\end{center}
+This is the property that makes transfer to an unseen location possible (see \cref{sec:use}).
+Note that what partial disentanglement (nonempty $\sur(Z_i)$) actually costs you is in interpretability 
+of individual latents (you can't point to ``this coordinate = leg length''), not predictive usability. 
+The content/style split is the property you need for prediction to work at all (style drops out), and 
+that one is clean regardless of $\sur(Z_i)$ (see \cref{sec:apply}).
+
+\subsection{Requirements on the environments}
+\label{sec:reqs}
+Let $L_c$ be the number of entries of $\vect w_c$ for the full content block, computed in
+\cref{prop:count} below, and $L_s=2n_s$.
+
+\begin{proposition}[Requirements for M1]\label{prop:m1req}
+Fix a value of $Z=(z_c,z_s)$ and suppose \cref{as:2} holds for $Z'=Z$ at this value. Write
+$\vect a(c)=\vect w_c(z_c,c)\in\R^{L_c}$ and $\vect b(r)=\vect b(z_s,r)\in\R^{L_s}$. For an occurring
+environment $u=(y,t,e)$ the vector is $\vect w(u)=(\vect a(y,t),\vect b(t,e))$. Then
+\begin{enumerate}[label=(\alph*),leftmargin=2em]
+\item \label{item:Lc} $L_c\ \le\ K_C-1$;
+\item \label{item:Ls} $L_s=2n_s\ \le\ K_R-1$;
+\item \label{item:Lc+Ls} $L_c+L_s\ \le\ \sum_{t\in\Tset_{\mathrm{occ}}}\bigl(|\Yset_t|+|\Lset_t|-2\bigr)+|\Tset_{\mathrm{occ}}|-1$.
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}
+Let $V$ be the linear span of the differences $\vect w(u)-\vect w(u_0)$ over occurring environments, i.e.\
+the direction space of the affine hull $H$ of the points $\vect w(u)$. \Cref{as:2} requires
+$\dim V=L_c+L_s$; in particular the projection of $V$ onto each block must be onto.
+\labelcref{item:Lc} The projection onto the content block is the direction space of the affine hull of the $K_C$ points
+$\vect a(c)$, of dimension at most $K_C-1$; it must equal $\R^{L_c}$.
+\labelcref{item:Ls} Likewise the projection onto the style block is spanned by differences of the $K_R$ points $\vect b(r)$.
+\labelcref{item:Lc+Ls} For each $t$, the points with time of day $t$ lie in the product of the affine hull of
+$\{\vect a(y,t)\}_{y\in\Yset_t}$ and the affine hull of $\{\vect b(t,e)\}_{e\in\Lset_t}$, an affine subspace $F_t$
+of dimension at most $(|\Yset_t|-1)+(|\Lset_t|-1)$. The hull $H$ is contained in the affine hull of
+$\bigcup_t F_t$, whose dimension is at most $\sum_t\dim F_t+|\Tset_{\mathrm{occ}}|-1$ (the affine hull of $k$
+affine subspaces has dimension at most the sum of their dimensions plus $k-1$). Hence
+$L_c+L_s=\dim V\le\sum_t(|\Yset_t|+|\Lset_t|-2)+|\Tset_{\mathrm{occ}}|-1$.
+\end{proof}
+
+\begin{remark}[Sufficiency]\label{rem:suff}
+The inequalities are necessary for \cref{as:2}. If every combination $(y,t,e)$ occurs and the vectors are in
+general position subject to the block structure, they are also sufficient, for the following reason. The
+within-$t$ differences supply up to $\sum_t(|\Yset_t|-1)$ independent directions in the content block and up
+to $\sum_t(|\Lset_t|-1)$ in the style block, and each of the $|\Tset_{\mathrm{occ}}|-1$ differences across
+times of day adds one further direction that moves \emph{both} blocks at once. I do not prove general
+position for the actual vectors, which are constrained by the Gaussian form of the model, so sufficiency is
+expected but not established. The coupling through $T$ is the reason for \labelcref{item:Lc+Ls}: the
+extra directions from changing $T$ are shared between the two blocks and cannot be counted twice.
+\end{remark}
+
+\begin{example}[Numbers for the camera-trap data]\label{ex:numbers}
+Suppose the ten species are combined with a binary time of day, all combinations occur, and the three
+training locations each see both times of day. Then $K_C=20$, $K_R=6$ and the bound in
+\labelcref{item:Lc+Ls} equals
+$2(10+3-2)+1=23$. Condition \labelcref{item:Lc} gives $L_c\le19$.
+Condition \labelcref{item:Ls} gives $2n_s\le5$, hence $n_s\le2$, so
+$L_s\le4$.
+Then \labelcref{item:Lc+Ls} never binds beyond \labelcref{item:Lc}, because $19+4=23$.
+If the style distribution depended on the
+location only, as in an earlier version of M1, then $K_R$ would be $3$ and $n_s\le1$.
+\end{example}
+
+\Cref{as:2} must hold at every value of $Z$ and for every ancestral $Z'$; the proposition addresses the
+whole set $Z'=Z$ at one value and is the natural binding case, but we do not claim that no other ancestral set
+is more demanding.
+
+\begin{proposition}[Entry count]\label{prop:count}
+For an ancestral set $Z'$ with $n'$ nodes, $E=|\mathcal{E}(\Mk_{Z'})|$ edges and $D=|\Delta(\Mk_{Z'})|$
+triangles in its Markov network, and sink set $\Sk=\Sk(\G_{Z'})$,
+\begin{equation}
+L=|\vect w(Z',u)|=3n'+3E+D-|\Sk|-\sum_{v\in\Sk}\deg_{\Mk_{Z'}}(v).
+\label{eq:L}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+The groups of \cref{eq:w} have sizes: $n'$ (first derivatives), $n'$ (pure second), $E$ (mixed
+second), $n'-|\Sk|$ (pure third, non-sinks), $\sum_{i\notin\Sk}\deg(i)=2E-\sum_{v\in\Sk}\deg(v)$ (mixed
+third, one entry per non-sink endpoint of each edge) and $D$ (triple). Adding gives \cref{eq:L}.
+\end{proof}
+
+For the content block use \cref{eq:L} with $Z'=Z_c$ to get $L_c$. \Cref{tab:examples} lists
+$L_c$ for some content graphs, and what fits into the $K_C=20$ values available under the assumptions of
+\cref{ex:numbers}.
+
+\begin{table}[ht]
+\centering
+\caption{Content-block requirement $L_c$ from \cref{eq:L}; condition \labelcref{item:Lc} of
+\cref{prop:m1req} is $K_C\ge L_c+1$, i.e.\ $L_c\le 19$ for $K_C=20$.}
+\label{tab:examples}
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+content graph $\Gc$ & $n_c$ & $E$ & $D$ & sinks (degree) & $L_c$ & $L_c+1$ & fits $K_C{=}20$?\\
+\midrule
+empty                              & 9 & 0 & 0 & 9 (all 0) & 18 & 19 & yes\\
+empty                              & 10 & 0 & 0 & 10 (all 0) & 20 & 21 & no\\
+collider $Z_1\to Z_2\leftarrow Z_3$ & 3 & 3 & 1 & 1 (deg.\ 2) & 16 & 17 & yes\\
+chain, 3 nodes                     & 3 & 2 & 0 & 1 (deg.\ 1) & 13 & 14 & yes\\
+chain, 4 nodes                     & 4 & 3 & 0 & 1 (deg.\ 1) & 19 & 20 & yes (barely)\\
+chain, 5 nodes                     & 5 & 4 & 0 & 1 (deg.\ 1) & 25 & 26 & no\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For the style block with Gaussian noise, $\log p^{(r)}(z_{s,j})=-(z_{s,j}-\mu_j^{(r)})^2/(2(\sigma_{s,j}^{(r)})^2)+\text{const}$, so
+\[
+\vect b(z_s,r)=\Bigl(\tfrac{\mu_j^{(r)}}{(\sigma_{s,j}^{(r)})^2}-\tfrac{z_{s,j}}{(\sigma_{s,j}^{(r)})^2},\
+-\tfrac1{(\sigma_{s,j}^{(r)})^2}\Bigr)_{j=1,\dots,n_s}.
+\]
+For fixed $z_s$ this is an invertible affine function of the natural parameters
+$\bigl(\mu_j^{(r)}/(\sigma_{s,j}^{(r)})^2,\,1/(\sigma_{s,j}^{(r)})^2\bigr)_j$. Hence the requirement that the
+$K_R$ points $\vect b(r)$ affinely span $\R^{2n_s}$ is the requirement that the natural-parameter vectors
+over the style cells $(t,e)$ affinely span $\R^{2n_s}$. For $n_s=1$ this means that the points
+$(\mu^{(r)}/(\sigma^{(r)})^2,\,1/(\sigma^{(r)})^2)$ over the cells are not all collinear. A pure shift of the
+mean, with equal variances in all cells, puts them on a line and violates the requirement.
+
+\begin{remark}
+These are conditions of the proof technique of \cite{ng2025}, and identification can be possible with
+less. \Cref{prop:m1req} states necessary conditions for \cref{as:2}; sufficiency is discussed in
+\cref{rem:suff}. For M1 under the assumptions of \cref{ex:numbers}, the bounds allow up to nine content
+latents if $\Gc$ is empty, correspondingly fewer for denser $\Gc$, and at most two style latents.
+\end{remark}

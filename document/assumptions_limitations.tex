@@ -1,0 +1,23 @@
+\section{Assumptions and limitations}
+\label{sec:limits}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Gaussian additive noise for all latents.} This is what \cref{thm:ng} requires; for an
+      isolated style latent the sink property is only needed trivially, but relaxing the Gaussianity
+      for that block is not covered by the theorem. The choice between the ANM and the heteroscedastic
+      model is discussed in \cref{app:hnm}.
+\item \textbf{Regularity.} $p^{(u)}$ has full support on $\R^{n}$ and is third-order differentiable;
+      $g$ is a $\mathrm{C}^2$ diffeomorphism onto its image; faithfulness holds.
+\item \textbf{Design.} In camera-trap data not every species occurs at every location or at both times of
+      day. \Cref{prop:m1req} gives necessary conditions for any design; sufficiency for a full design is
+      expected but not proved (\cref{rem:suff}).
+\item \textbf{Coupling through the time of day.} Because $T$ enters both blocks, the content and style
+      requirements are not independent; \cref{prop:m1req}(c) is the joint bound.
+\item \textbf{Pointwise conditions.} \Cref{as:1,as:2} must hold at every value of the latents, not on
+      average.
+\item \textbf{Style as a random variable.} Style latents vary within a location and time of day. Effects
+	  that are fixed within a location and act on the mixing itself (for example a camera-specific
+	  transformation $g(\cdot;\theta_e)$) are outside M1.
+\item \textbf{Invariance \labelcref{item:P2} is an assumption.} It can be checked on labelled data, for
+      example by testing whether features of a single species and time of day carry location information
+      beyond what $Z_s$ explains.
+\end{itemize}

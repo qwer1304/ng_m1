@@ -1,0 +1,16 @@
+\section{Setting and notation}
+\label{sec:setting}
+
+We observe image features $X\in\R^{d}$, a discrete variable $C=(Y,T)$ consisting of the species $Y$ and
+the time of day $T$, with values $c=(y,t)\in\Cset$, and a location index $e\in\{1,\dots,m\}$.
+During training, $C$ and $e$ are both observed. Data comes from the TerraIncognita (TI) dataset; 
+the training locations are L38, L43 and L46 (so $m=3$). The test location L100 is unseen. 
+The goal is to predict $C$ (in particular the species) from
+$X$ at a new location. The time of day may also be observed at test time; this only simplifies
+inference (\cref{sec:use}). An \emph{environment} is a triple $u=(c,e)=(y,t,e)$.
+
+Throughout, $\Cset_{\mathrm{occ}}\subseteq\Cset$ denotes the set of values of $C$ that actually occur in
+the training data and $K_C=|\Cset_{\mathrm{occ}}|$. For a time of day $t$, $\Yset_t$ is the set of
+species that occur with $t$ and $\Lset_t$ the set of locations at which $t$ occurs; $\Tset_{\mathrm{occ}}$ is
+the set of times of day that occur. The set of occurring pairs $r=(t,e)$ (``style cells'') is
+$\Rset_{\mathrm{occ}}$, with $K_R=|\Rset_{\mathrm{occ}}|$. For a graph $\G$, $\PA(\cdot)$ denotes parents of node(s) and $\Sk(\cdot)$ the set of sink nodes (nodes without children); Ng et al.\ write $S(\G)$ for the latter.

@@ -1,0 +1,99 @@
+\section{The noise term and the environment index}
+\label{app:eps}
+
+This appendix records how the equations of \cite{ng2025} are read in this note.
+
+\subsection{The index \texorpdfstring{$u$}{u}}
+$u$ indexes environments; $Z^u=(Z_1^u,\dots,Z_n^u)$ is the latent vector of an environment-$u$ sample, so
+the environment is marked on the random variable itself, exactly as it already is on $f_i^{(u)}$ and
+$\epsilon_i^{(u)}$ in \cref{eq:anm} below. $\G_Z$ and $g$ carry no such superscript: the same DAG
+and the same mixing function are used to generate $X^u=g(Z^u)$ in every environment. Write $p^{(u)}$ for
+the density of $Z^u$, i.e.\ $p^{(u)}(z)=\Pr[Z^u\in dz]/dz$; this is the object the sufficient-change
+assumptions are stated on, and it changes with $u$ precisely because the mechanisms $f_i^{(u)}$ and
+$\epsilon_i^{(u)}$ do. No prior $p(u)$ over environments, and no mixture $\sum_u p(u)p^{(u)}(z)$, is
+needed for \cref{thm:ng}: the theorem conditions on $u$ throughout and never marginalizes over it. (For
+M1, a prior over which environment a given image comes from is supplied separately, by
+\labelcref{item:P4}, and is used only for prediction, \cref{sec:use}; it is not part of the
+identifiability argument.) In Fig.~1 of \cite{ng2025}, $u$ is drawn as a node with arrows into the
+latents; we do not follow that convention here (\cref{fig:m1} draws $u$ as a plate index instead), since
+an arrow $u\to Z_i$ would make $u$ itself a random variable with parents and children, which is neither
+assumed nor needed.
+
+In each environment, $p^{(u)}(z)=\prod_k p^{(u)}(z_k\mid\PA(z_k))$. The conditional
+$p^{(u)}(z_i\mid\PA(z_i))$, which is the mechanism, is not the marginal $p^{(u)}(z_i)$ of one latent;
+they coincide only for a node without parents. The sufficient-change assumptions are stated on the
+derivatives of $\log p^{(u)}(z')$, the joint, which changes with $u$ because the mechanisms change.
+
+\subsection{What \texorpdfstring{$\epsilon_i^{(u)}$}{epsilon} is in the ANM}
+Eq.~(4) of \cite{ng2025}, with the environment marked on $Z$ as in \cref{sec:ng}, reads
+\begin{equation}
+Z_i^u=f_i^{(u)}\bigl(\PA(Z_i^u;\G_Z)\bigr)+\epsilon_i^{(u)},\qquad \epsilon_i^{(u)}\ \text{Gaussian}.
+\label{eq:anm}
+\end{equation}
+Section~4 of the paper says only that the noise is Gaussian. It is not the standard normal: the
+noise $\epsilon_i^{(u)}\sim\Nn\bigl(\mu_i^{(u)},(\sigma_i^{(u)})^2\bigr)$ carries a mean and a variance, and both
+may depend on $u$. The evidence in the paper is the following.
+\begin{itemize}[leftmargin=1.5em]
+\item In the proof of Lemma~1 (Appendix~C.1), the conditional density of a sink is written with a scale
+      $\sigma_i^{(u)}$, and $(\sigma_i^{(u)})^2$ is said to be the variance of $\epsilon_i^{(u)}$. The second
+      derivative of the log-density of a sink with respect to itself is $-1/(\sigma_i^{(u)})^2$.
+\item In the estimator of Section~4.3, the prior of each latent has a per-environment mean $\hat\mu_i^{(u)}$
+      and scale $\hat\sigma_i^{(u)}$ computed from $u$ by small networks, and the scale does not depend on the
+      parents.
+\item In Section~4.2 and Section~6, the variances of the noise (and, in the simulations, the means) are
+      generated randomly for each environment.
+\end{itemize}
+For a node with parents, the mean of the noise is absorbed into $f_i^{(u)}$; for a root node, $f_i^{(u)}$ is a
+constant and the mean of the noise is the location of the node. The variance $(\sigma_i^{(u)})^2$ depends on $u$
+but not on the parents.
+
+The following is my own derivation, not a statement in the paper. For a sink $Z_i$, the entry
+$\partial^2\log p^{(u)}/\partial Z_i^2=-1/(\sigma_i^{(u)})^2$ in $\vect w$ depends on $u$ only through the
+variance. If the variance were the same in all environments, this entry would be constant in $u$, so it would
+be zero in every difference vector, and \cref{as:2} could not hold. Hence \emph{the noise variance of every sink
+latent must vary across environments}. For an isolated style latent this is the statement that the scale must
+change across the style cells and not only the mean (cf.\ \cref{sec:reqs}).
+
+\subsection{What \texorpdfstring{$\epsilon_i^{(u)}$}{epsilon} is in the HNM}
+Eq.~(5) of \cite{ng2025} reads
+\begin{equation}
+Z_i^u=f_i^{(u)}\bigl(\PA(Z_i^u;\G_Z)\bigr)+\sigma_i^{(u)}\bigl(\PA(Z_i^u;\G_Z)\bigr)\,\epsilon_i^{(u)},
+\label{eq:hnm}
+\end{equation}
+with $\epsilon_i^{(u)}$ Gaussian and $f_i^{(u)}$, $\sigma_i^{(u)}$ third-order differentiable. Here the Gaussian
+noise is the standard normal: in the proof of Lemma~2 (Appendix~C.2) the density is written in terms of
+$\bigl(Z_i^u-f_i^{(u)}\bigr)/\sigma_i^{(u)}(\PA(Z_i^u))$, so the scale is carried by the function
+$\sigma_i^{(u)}$ of the parents, and this function also depends on $u$.
+
+\subsection{Summary of the difference}
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & ANM, Eq.~(4) & HNM, Eq.~(5)\\
+\midrule
+noise & $\epsilon_i^{(u)}\sim\Nn(\mu_i^{(u)},(\sigma_i^{(u)})^2)$ & $\epsilon_i^{(u)}\sim\Nn(0,1)$\\
+scale & $\sigma_i^{(u)}$ depends on $u$ only & $\sigma_i^{(u)}(\PA(Z_i))$ depends on $u$ and on the parents\\
+sink $Z_i$ & $\partial^2\log p/\partial Z_i^2=-1/(\sigma_i^{(u)})^2$ & $\partial^2\log p/\partial Z_i^2=-1/\sigma_i^{(u)}(\PA(Z_i))^2$\\
+sink property & $\partial^3\log p/\partial Z_i^2\partial Z_j=0$ for all $j$ & $\partial^3\log p/\partial Z_i^2\partial Z_j=0$ only for $Z_j\notin\PA(Z_i)$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Two common misreadings}
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{The index $u$ does not mean that the noise is resampled per environment in a special way.} Within
+      one environment every sample receives fresh, independent noise for every node; $u$ only selects the
+      parameters of the distribution from which the noise is drawn. If the noise did not depend on $u$, it
+      would still be drawn afresh for each sample and each node, independently across nodes. Sharing one draw
+      among the nodes would break the independence of the noise terms.
+\item \emph{``Gaussian'' does not mean standard normal in the ANM.} It does in the HNM, where the scale is a
+      separate function.
+\end{itemize}
+In the simulations of \cite{ng2025} the means and variances of the noise and the weights of the mechanisms are
+drawn once per environment, which generates a family of environments.
+
+\subsection{M1 in these terms}
+For a content latent in the cell $c=(y,t)$, each image receives a fresh draw from
+$\Nn(0,(\sigma_{c,i}^{(c)})^2)$, and the same variance applies at every location; the mean is carried by
+$f_i^{(c)}$. For a style latent in the cell $r=(t,e)$, each image receives a fresh draw from
+$\Nn(\mu_j^{(r)},(\sigma_{s,j}^{(r)})^2)$.

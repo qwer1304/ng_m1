@@ -1,0 +1,153 @@
+\section{The theory of Ng et al.}
+\label{sec:ng}
+
+We restate what is needed from \cite{ng2025}. For each environment $u\in[m]$ there is a latent vector
+$Z^u=(Z_1^u,\dots,Z_n^u)$ and an observation $X^u=g(Z^u)$, with $g$ a $\mathrm{C}^2$ 
+\textbf{\textit{diffeomorphism onto its image ((injective, smooth, smooth inverse)}}, shared by all environments. Each coordinate satisfies
+$Z_i^u=f_i^{(u)}(\PA(Z_i^u;\G_Z))+\epsilon_i^{(u)}$ with $\epsilon_i^u$ Gaussian (additive noise
+model, ANM; the meaning of $\epsilon_i^{(u)}$ is discussed in \cref{app:eps}), where the same unknown
+DAG $\G_Z$ holds in every environment and the mechanisms $f_i^{(u)}$ may change arbitrarily with
+$u$. Write $p^{(u)}_Z$ for the density of $Z^u$; it is assumed third-order differentiable (and hence 
+--  continuous) with \emph{full support on $\R^{n}$}.
+
+\subsection{Ng et al. objective}
+Ng et al. objective is to learn an \textit{observationally equivalent} model 
+$(\hat g, p_{\hat Z}, \hat \G_{\hat Z})$
+that follows the above data generating process, and generates a data distribution that matches the 
+distribution of the observed random variables $X$ across the given environments, i.e. 
+(\cite[Equation 2]{ng2025}), 
+\begin{equation}
+p^{(u)}_{\hat X}(x) = p^{(u)}_X(x),\ \forall u \in [m],\ x \in X^{(u)},
+\label{eq:obs_equiv}
+\end{equation}
+where $\hat Z$ denote the estimated latent variables and $\hat X = \hat{g}(\hat Z)$. In this case, 
+the models $(\hat g, p_{\hat Z}, \G_{\hat Z})$ and $(g, p_Z, \G_Z)$ are said to be 
+\textit{observationally equivalent}.
+
+\subsection{Graph notions}
+The \emph{Markov network} $\Mk_Z$ has an edge $\{Z_i,Z_j\}$ iff
+$Z_i\not\perp Z_j\mid Z_{[n]\setminus\{i,j\}}$, equivalently iff \linebreak
+$\partial^2\log p^{(u)}(Z)/\partial Z_i\partial Z_j\not\equiv0$ for some $u$; under faithfulness it is
+the moral graph of $\G_Z$. Write $\mathcal{E}(\Mk_Z)$ for its edge set, $\Delta(\Mk_Z)$ for its 
+set of triangles and $\deg_{\Mk_Z}(v)$ for the degree of a node. 
+The \emph{surrounding parents} of $Z_i$ are
+\[
+\sur(Z_i;\G_Z):=\{Z_j\in\PA(Z_i;\G_Z)\mid Z_j\text{ is a parent of every child of }Z_i\}.
+\]
+
+\subsection{Sufficient-change vectors}
+For a set $Z'$ of latents that contains all of its own ancestors (an \emph{ancestral} set), with
+$n'=|Z'|$, let $\G_{Z'}$ be the induced DAG, $\Mk_{Z'}$ its Markov network, and define
+\begin{align}
+\vect\tau(Z',u) &= \Bigl(\tfrac{\partial\log p^{(u)}(Z')}{\partial Z_i}\Bigr)_{Z_i\in Z'}
+\oplus\Bigl(\tfrac{\partial^2\log p^{(u)}(Z')}{\partial Z_i^2}\Bigr)_{Z_i\in Z'}
+\oplus\Bigl(\tfrac{\partial^2\log p^{(u)}(Z')}{\partial Z_i\partial Z_j}\Bigr)_{\{Z_i,Z_j\}\in \mathcal{E}(\Mk_{Z'})},
+\label{eq:tau}\\[2pt]
+\vect w(Z',u) &= \vect\tau(Z',u)
+\oplus\Bigl(\tfrac{\partial^3\log p^{(u)}(Z')}{\partial Z_i^3}\Bigr)_{Z_i\in Z'\setminus\Sk(\G_{Z'})}
+\oplus\Bigl(\tfrac{\partial^3\log p^{(u)}(Z')}{\partial Z_i^2\partial Z_j}\Bigr)_{\substack{\{Z_i,Z_j\}\in \mathcal{E}(\Mk_{Z'}),\\ Z_i\notin\Sk(\G_{Z'})}} \nonumber \\
+& \quad \oplus\Bigl(\tfrac{\partial^3\log p^{(u)}(Z')}{\partial Z_i\partial Z_j\partial Z_k}\Bigr)_{\{Z_i,Z_j,Z_k\}\in\Delta(\Mk_{Z'})}.
+\label{eq:w}
+\end{align}
+In the fourth group in \cref{eq:w} we read the index set as \emph{ordered} pairs $(i,j)$: an edge contributes one entry for each endpoint that is not a sink, taking that endpoint as the squared variable. This is how
+the entries arise in Eq.~(7) in the proof of Proposition~2 of \cite{ng2025}, where the sum runs over
+such pairs, and how the term $3|E|$ in their count arises. (The fourth group is printed in the paper with
+the index condition ``$i<j$''; see \cref{rem:ij}.)
+
+\begin{assumption}[Sufficient changes for the Markov network, \cite{ng2025}]\label{as:1}
+For every ancestral $Z'$ and every value of $Z'$ there exist $2n'+|\mathcal{E}(\Mk_{Z'})|+1$ values
+$u_0,u_1,\dots$ such that the vectors $\vect\tau(Z',u_j)-\vect\tau(Z',u_0)$, $j\ge1$, are linearly
+independent.
+\end{assumption}
+
+\begin{assumption}[Sufficient changes for sink nodes, \cite{ng2025}]\label{as:2}
+For every ancestral $Z'$ and every value of $Z'$, with $L:=|\vect w(Z',u)|$, there exist $L+1$ values
+$u_0,\dots,u_L$ such that the vectors $\vect w(Z',u_j)-\vect w(Z',u_0)$, $j=1,\dots,L$, are linearly
+independent.
+\end{assumption}
+
+\begin{theorem}[Identifiability with latent ANMs, \cite{ng2025}]\label{thm:ng}
+Under the data generating process above, \cref{as:1,as:2} and faithfulness, Algorithm~1 of 
+\cite{ng2025}, which is required to find an \textit{observationally equivalent} model of the data
+generating process, returns $(\hat{\G},\hat Z)$ such that, for some permutation $\pi$ of the estimated 
+latents, (i) $\hat{\G}_\pi$ and $\G_Z$ are identical, and 
+(ii) each $\hat Z_{\pi(i)}$ is solely a function of a subset of
+$\{Z_i\}\cup\sur(Z_i;\G_Z)$.
+\end{theorem}
+
+The role of the third derivatives is to identify sink nodes: for a sink $Z_i$ with \textit{Gaussian}
+noise, $\partial^3\log p/\partial Z_i^2\partial Z_j=0$ for all $j$ \cite{ng2025} (a property used in
+score matching for observed variables in \cite{rolland2022}). With the Markov network known, the parents
+of an identified sink are its neighbors; the sink is frozen and the procedure repeats on the rest.
+Without further assumptions nonlinear ICA and hence CRL are not identifiable \cite{hyvarinen1999};
+the environments supply the needed variation. The Markov-network stage alone is the result of
+\cite{zhang2024}, which yields identification only up to mixing with ``intimate neighbors''.
+
+Algorithm~1 requires learning $(\hat g^t, p^t_{\hat Z}, \G^t_{\hat Z})$ where $t$ is the iteration 
+index under additional constraints to achieve \cref{eq:obs_equiv} -- observational equivalence. 
+They propose to use a VAE to that end with additional regularization terms. 
+
+\subsection{Gaussianity assumptions in ANM}
+Ng et al. assume Gaussianity in two places: (i) In their theory exogenous noise terms and (ii) in the implementation of the VAE where all distributions that need to be specified (encoder, decoder, prior) are assumed Gaussian.
+
+\begin{itemize}
+\item \textit{In the theory}: Gaussianity of the exogenous noise is used for exactly one purpose -- the 
+sink-detection property. For a sink $Z_i$ under Gaussian noise, $\log p(Z_i\mid\text{parents})$ is 
+quadratic in $Z_i$, so $\partial^3\log p/\partial Z_i^2\partial Z_j=0$ for all $j$ (ANM case). This 
+vanishing is what lets Algorithm~1 identify sinks via third-derivative tests and peel them off one at a 
+time. It's genuinely Gaussian-specific (quadratic log-density $\Leftrightarrow$ Gaussian) -- no other 
+noise family gives this cleanly. Nothing else in Assumptions~1/2 (the linear-independence conditions) 
+needs Gaussianity per se; they're stated generically in terms of derivatives of $\log p^{(u)}$.
+
+\item \textit{In the implementation}: Only one of the three Gaussian choices actually follows from the 
+theory:
+\begin{itemize}
+\item \textbf{Prior over $\hat Z$} (\texttt{mean/logvar} nets, ANM structure) -- follows from the 
+theory. This is the direct implementation of the Gaussian exogenous-noise assumption, and it's what the 
+sink-freezing logic is trying to exploit (even if, per \cref{app:code}, the actual freezing rule is a 
+sparsity-mask heuristic, not the literal third-derivative test).
+\item \textbf{Encoder $q(z\mid x)$ Gaussian} -- does not follow from the theory. The paper says nothing 
+about the recognition model's distribution; this is a standard VAE/reparameterization convenience, 
+orthogonal to the noise-model assumption.
+\item \textbf{Decoder Gaussian $\rightarrow$ MSE reconstruction loss} -- does not follow from the theory 
+either. The paper never states a reconstruction loss at all (already noted in \cref{app:code}) as
+``\textit{an implicit modelling choice not discussed in the paper}''.
+This is purely a VAE-training-objective choice, not an implication of Gaussian noise in the SEM.
+\end{itemize}
+So: theory constrains the prior; encoder and decoder Gaussianity are independent engineering choices 
+riding along with ``\textit{it's a VAE}'', not consequences of the identifiability assumption.
+\end{itemize}
+
+\subsection{Gaussianity assumptions in HNM}
+\begin{itemize}
+\item \textit{Theory}: Gaussianity still does exactly the same job -- identifying sinks -- but the 
+property it buys is weaker. Now $\epsilon_i\sim\mathcal N(0,1)$ and the scale $\sigma_i^{(u)}(\PA(Z_i))$ 
+carries the parent-dependence, so $\log p(Z_i\mid\PA)$ is no longer purely quadratic in $Z_i$ 
+(the $\log\sigma_i(\PA)$ term depends on the parents too). Result: $\partial^3\log p/\partial 
+Z_i^2\partial Z_j=0$ only for $Z_j\notin\PA(Z_i)$ -- vanishes for non-parents, not for parents. So 
+Gaussianity of $\epsilon_i$ is still what makes the non-parent third derivatives vanish; it just no 
+longer kills the parent ones, because the heteroscedastic scale reintroduces parent-dependence into the 
+third derivative.
+
+Practically this means the sink test still works, but is less informative: you learn 
+\textit{``no non-parent neighbors act on $Z_i$ nontrivially,}'' but you don't get the same clean 
+``\textit{this column of the adjacency is zero}'' signal from the pure log-density curvature -- you 
+still need the Markov network (second derivatives) to know who the candidate neighbors are, and the 
+third-derivative sink test now only rules out non-parents rather than certifying the full parent set 
+directly the way it did in the ANM.
+\newpage
+\item \textit{Implementation}:
+\begin{itemize}
+\item \textbf{Prior} -- same story, just needs \texttt{log\_var\_net} (or whatever computes 
+$\hat\sigma_i^{(u)}$) to also take the masked/estimated parents as input, not just $u$. Still 
+{theory-driven}.
+\item \textbf{Encoder/decoder Gaussianity} -- unaffected, same VAE convenience as before, orthogonal to 
+ANM vs. HNM.
+\item \textbf{Sink-freezing heuristic} (\texttt{find\_sinknodes\_and\_fix}) -- 
+this one actually gets harder to 
+justify under HNM, since the mask-based heuristic was already a loose proxy for the ANM's sharp third-
+derivative test; under HNM the thing it's supposed to approximate is itself weaker, so the gap between 
+``\textit{heuristic zeros out a column}'' and ``\textit{theorem's sink property}'' widens rather than 
+narrows.
+\end{itemize}
+\end{itemize}

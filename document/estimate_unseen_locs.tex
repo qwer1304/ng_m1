@@ -1,0 +1,74 @@
+\section{Estimation and use at an unseen location}
+\label{sec:use}
+
+\paragraph{Prediction at an unseen location.}
+Algorithm~1 of \cite{ng2025} applies with environments $u=(y,t,e)$. A VAE with a shared encoder and
+decoder is trained on all environments. The prior over $\hat Z_c$ is a Gaussian ANM whose mechanism
+parameters are conditioned on $c=(y,t)$ (for instance through embeddings of $y$ and $t$), and the prior over
+$\hat Z_s$ has mean and variance conditioned on $r=(t,e)$. The adjacency matrix of the content block is learned
+with the sparsity and moral-graph penalties of \cite{ng2025}, and sinks are identified and frozen
+iteratively. The style coordinates may be designated in advance as isolated nodes or discovered as estimated
+nodes with no edges whose distribution depends on $(t,e)$ but not on the species $y$; an isolated content
+latent with no parents whose distribution depends on $y$ is a content latent. The numbers of latents $n_c$
+and $n_s$ are hyperparameters; \cite{ng2025} suggest choosing the number of latents by the ELBO.
+(\Cref{app:code} documents, against the released reference code, which of these pieces are already
+implemented, which are only partly implemented, and which still need to be built for M1.)
+
+\paragraph{Prediction at a new location $e^\ast$.}
+Encode $x$ to $(\hat z_c,\hat z_s)$. Since $x\leftrightarrow(z_c,z_s)$ is an injection, the 
+posterior of $C=(Y,T)$ is
+$$
+p(c\mid x^\ast,e^\ast) = p(c\mid z_c,z_s,e^\ast) = p(y,t\mid z_c,z_s,e^\ast) =
+p(y\mid t,z_c,z_s,e^\ast)p(t\mid z_c,z_s,e^\ast).
+$$
+Two cases exist: Time of day observed or unobserved at test time.
+\begin{itemize}
+\item \emph{Time of day observed at test time.} Since $Z_s$ is independent of $(Y,Z_c)$
+	given $(x^\ast,t^\ast,e^\ast)$,
+	\begin{equation}
+	p(y\mid x^\ast,t^\ast,e^\ast) =
+	p(y\mid z_c,z_s,t^\ast,e^\ast) =
+	p(y\mid z_c,t,e^\ast)\ \propto\ p^{e^\ast}(y\mid t^\ast)\,p(z_c\mid y,t^\ast),
+	\label{eq:predict}
+	\end{equation}
+	so the style latents drop out exactly and only the content latents are used.
+	Hence, the species $y$ can be inferred from maximizing the likelihood-prior product over $y$ for 
+	the given $t^\ast$.
+	The factor $p(z_c\mid y,t^\ast)$ is invariant by \labelcref{item:P2}.
+	The prior $p^{e^\ast}(y\mid t^\ast)$ can be obtained from the location-specific prior 
+	$p^{e^\ast}(C)$;
+	it can be taken equal to the pooled training prior, or estimated from unlabeled images of 
+	$e^\ast$ (for
+	instance by EM), if multiple images are available, or assumed to be uniform and ignored. No 
+	style parameters of $e^\ast$ are needed.
+
+\item \emph{Time of day not observed.} Then
+	$p(c\mid z_c,z_s,e^\ast)\propto p^{e^\ast}(c)\,p(z_c\mid c)\,p^{(t,e^\ast)}(z_s)$, and the last 
+	factor depends on $t$, so the style carries information about the time of day. Dropping it gives
+	$p(c\mid z_c,e^\ast)\propto p^{e^\ast}(c)\,p(z_c\mid c)$, which is the correct posterior given 
+	$z_c$
+	alone but not the full posterior; using the style would require the style distributions of the 
+	new  location for each time of day, which are not available from labelled data.
+
+	Coarse time of day could be approximated by the image's brightness:
+	This is reasonable, with one caveat. Brightness is mostly determined by style (exposure, IR 
+	mode) and by $t$, so it works as a cheap, fixed read-out of part of $z_s$. It fails if a new 
+	camera shifts the day/night threshold, for example a flash-lit night image or a shaded day 
+	image.
+
+	We can measure this before relying on it. Fit brightness $\rightarrow$ day/night on some on the 
+	training locations and test on the rest. Then there are two cases:
+	\begin{enumerate}
+	\item If the error is near zero, treat $t$ as observed and use
+		$p(y \mid z_c, t) \ \propto\ \bar{p}(y|\tilde{t})p(z_c \mid y,\tilde{t})$, where $\tilde{t}$ 
+		is the estimated $t$ from brightness.
+	\item If not, use it softly:
+		$p(y \mid z_c, b) \ \propto\ \sum_t \bar{p}(y,t)p(z_c \mid y,t)p(b \mid t)$.
+		This assumes brightness $b$ depends on the image only through $t$ and style, not on the 
+		species content, which holds roughly unless animal coat color moves overall brightness.
+
+		The soft version still needs $p(b \mid t)$ at L100, which you take from the pooled training 
+		data. That is the same unknown style distribution as before, but one-dimensional, so a rough 
+		version is far more benign than the full style vector.
+\end{enumerate}
+\end{itemize}

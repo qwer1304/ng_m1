@@ -1,0 +1,367 @@
+\section{Pseudo-injective estimation: replacing the flow head with a regularized VAE}
+\label{sec:pseudoinj}
+
+\Cref{sec:flow} proposed a flow head to get an exactly invertible $g$.
+It was abandoned before implementation: an exactly invertible map cannot reduce dimension
+(\cref{sec:flow:motivation}), so a square injective flow head is structurally the wrong shape for M1, 
+which needs roughly ten output latents, not a $150{,}528$-dimensional one. This section proposes what 
+replaces it: not an exact diffeomorphism, but a pair of networks -- a frozen, pretrained backbone and a 
+trainable head -- each carrying an explicit, measurable regularizer that keeps them \emph{close to} 
+\textbf{injective}, while actually reducing dimension the way \nameref{sec:archB} does. 
+We first restate the problem this is meant to solve, then the alternatives that were considered and set 
+aside, then the two pieces of the proposed pipeline (\cref{sec:pseudoinj:invae,sec:pseudoinj:blae}), 
+then a first, wrong version of the
+training objective and why it had to be corrected (\cref{sec:pseudoinj:jacobian}), then the corrected
+architecture (\cref{sec:pseudoinj:arch}), and finally an explicit list of gotchas
+(\cref{sec:pseudoinj:gotchas}) that a reader implementing this should not discover the hard way.
+
+\subsection{The problem this section answers}
+\label{sec:pseudoinj:problem}
+\Cref{sec:archB:gap} already states the gap in \nameref{sec:archB} plainly: a frozen ResNet-50 is
+provably non-injective (any pooling convnet is), so nothing constrains $\mathrm{BB}\circ g^{-1}$ to be
+injective, differentiable, or otherwise well-behaved, and the gap is \emph{unexamined} -- nothing in the
+pipeline measures how bad it is. \Cref{sec:flow} closed that gap exactly, at the cost of being unable to
+reduce dimension. What is wanted is a middle position: a backbone and a head that are not exactly
+injective, but whose deviation from injective is bounded and estimated, not ignored, while still landing
+at M1's small latent dimension (\emph{``pseudo-injective''}).
+
+\subsection{Alternatives considered and set aside}
+\label{sec:pseudoinj:discarded}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Rectangular (injective) flows} \cite{caterini2021}. These are the flow family that can, in
+      principle, reduce dimension while staying exactly injective, by computing the Gram determinant
+      $\det(J^\top J)^{1/2}$ instead of a square Jacobian determinant (\cref{sec:flow:injective}). Set
+      aside: the published results barely reach CIFAR-10 scale, not ImageNet-scale full-resolution 
+      images, and computing (or differentiating) the Gram determinant is itself an open research 
+      problem, not an engineering cost.
+\item \textbf{A $(z,w)$ padding variant.} Keep an exactly bijective, dimension-preserving flow as in
+      \cref{sec:flow}, but declare only the first $\sim\!10$ coordinates of its output ``$z$'' (M1's
+      latent) and treat the rest as a nuisance padding vector $w$, discarded after training. Set aside:
+      this sits outside \cref{thm:ng} as written (the theorem is stated for $Z$ itself, not a marginal or
+      a projection of a larger vector with no constraint tying $w$ to anything), and it does not obviously
+      buy anything \nameref{sec:archB} does not already give more cheaply.
+\end{itemize}
+
+\subsection{IN-VAE: a pretrained, frozen, reconstruction-trained backbone}
+\label{sec:pseudoinj:invae}
+\textbf{What it is.} A large, pretrained image autoencoder of the kind used as the first stage of latent
+diffusion pipelines: an encoder/decoder pair trained end-to-end on a reconstruction (plus, depending on
+the variant, adversarial and/or perceptual) objective at ImageNet scale, whose \emph{encoder} we reuse
+frozen as BB, exactly as \nameref{sec:archB} reuses a frozen ResNet-50. We call this class \textbf{IN-VAE}
+in this note: pseudo-injective not because any Jacobian argument certifies it, but because reconstruction
+training directly rewards the encoder-decoder pair for approximately undoing each other, which a
+classification objective (plain ResNet-50, or the supervised-pretraining case of \cref{sec:pretrain}) has
+no reason to do at all. Unlike \nameref{sec:archB}'s pooled $\sim\!3072$-dim vector, IN-VAE's output is a
+\emph{spatial} latent, a tensor of shape $C\times h\times w$ (concretely $32\times16\times16$ for the
+chosen candidate, \cref{sec:pseudoinj:arch}), not a flattened, globally pooled embedding -- this is
+relevant to the head architecture below.
+
+\textbf{Candidates surveyed.} SD-VAE kl-f8 (embedding width $4096$),
+\footnote{the regularization type on the latent: KL-regularized, $\times$8 spatially downsampled}
+the IN-VAE/REPA-E baseline used in
+this note ($8192$), E2E-VAE ($8192$-class, but its representation-alignment loss is trained to match a
+downstream generative model's preferred feature geometry, which is exactly the kind of pressure
+\cref{sec:pretrain} already flags as likely to squeeze out style/location cues), FLUX/SD3 VAE
+($16384$), DC-AE, and MAETok/STELLAR (semantically-shaped tokenizers, same style-squeezing risk as
+E2E-VAE, for a different reason: their objective explicitly rewards semantic/content compression). Every
+candidate carrying this alignment or semantic-shaping risk -- E2E-VAE, MAETok, STELLAR -- must be screened
+with the linear-probe diagnostic of \cref{app:probe} (species accuracy plus within-species location
+accuracy) before it is used, exactly as \cref{sec:pretrain} already requires for the ResNet-50 case; none
+of them is used or discussed further in this note.
+
+\textbf{Why IN-VAE (the REPA-E-style baseline) \cite{leng2025repae} is the default here.} It is trained on plain reconstruction
+(plus generic perceptual/adversarial terms), with no alignment or semantic-shaping loss pulling it toward
+discarding style/location information; its embedding width ($8192$, i.e.\ $32\times16\times16$) is
+comparable to the other non-flagged candidates; and, as an encoder-decoder pair with a released,
+well-tested implementation (Hugging Face \texttt{diffusers.AutoencoderKL} \cite{aekl}), it needs no 
+bespoke pipeline code, only a frozen forward pass -- the same iteration-speed argument \cref{sec:archB} 
+already makes for a frozen backbone. Everything from here on assumes this choice; it should still pass 
+\cref{app:probe}'s screen before being trusted, the same as any candidate.
+
+\subsection{BLAE: an injective/bi-Lipschitz regularizer for the trainable head}
+\label{sec:pseudoinj:blae}
+\textbf{What it is.} Zhan et al.\ \cite{zhan2026blae} assume that high-dimensional data resides
+on a $k$-low-dimensional manifold $\Mk \subset \R^m,\ k = \dim(\Mk)$ and that there's an autoencoder 
+that learns this intrinsic representation through a pair of parametrized mappings 
+$(\E_\theta,\D_\phi)$:
+\begin{itemize}
+\item The encoder $\E_\theta : \R^m \to \R^n (k < n \ll m)$ compresses data onto a low-dimensional 
+      latent space;
+\item The decoder $\D_\phi : \R^n \to \R^m$ reconstructs the original data from the latent 
+representation.
+\end{itemize}
+
+They propose two losses to add to an otherwise ordinary autoencoder, meant to push its encoder 
+toward being injective without requiring an exactly invertible architecture:
+\begin{itemize}[leftmargin=1.5em]
+\item an \emph{injective} (separation) loss, which penalizes distinct inputs landing too close 
+      together in latent space (their Theorem~1 gives a separation criterion);
+\item a \emph{bi-Lipschitz} relaxation term, which additionally penalizes local distortion of
+      \emph{geodesic} distances between the ambient data (estimated once via an Isomap-style 
+      shortest-path computation) and Euclidean distances between the corresponding latents; the 
+      paper argues (their Theorems~3-4) this relaxation is admissible at $O(n)$ latent dimensions, 
+      where a hard embedding guarantee would need $O(k^2)$.
+\footnote{According to the Nash embedding theorem \cite{nash1956}, a $k$-dimensional compact 
+Riemannian manifold requires a latent dimension of $O(k^2)$ to guarantee an isometric embedding
+(distance preserving); the required latent dimension $n$ satisfies 
+$\frac{k(k+1)}{2} \le n \le \frac{k(3k+11)}{2}$.}
+\end{itemize}
+This is a \emph{trained regularizer}, not a proof of injectivity, and it is unproven at ImageNet 
+scale: the paper's own experiments are Swiss Roll, dSprites, MNIST, CIFAR-10, Bird, and Teapot.
+
+\textbf{What is reusable from the released repository, and what is not.} The repository's dataset-
+specific autoencoder classes are toy-sized and toyishly-implemented (latent dims $2$--$16$, small 
+fixed image sizes) and not directly usable.
+What \emph{is} architecture-agnostic and directly reusable: the injective loss and the bi-Lipschitz 
+term themselves (they take only a latent batch and a precomputed geodesic-distance table, nothing
+dataset-specific), and the geodesic-distance-table computation (\cref{sec:pseudoinj:gotchas} 
+discusses its cost at TI scale). \textbf{No VAE variant is released}: a stochastic BL-VAE is 
+described only in the paper's Appendix~C.6.2, demoed on Swiss Roll, and never shipped in the code 
+(a repository search for VAE/reparameterization/log-variance/KL code returns nothing in Python 
+files; there's a Jupyter notebook with some VAE-denoted variables, but their examination shows that 
+this is not a true VAE).
+
+\subsection{Why a VAE head, and not a deterministic autoencoder}
+\label{sec:pseudoinj:jacobian}
+\textbf{The question.} The exact change-of-variables objective of \cref{eq:flow-nll} needs a volume
+term. Neither IN-VAE's encoder nor a BLAE-regularized head is a square, exactly invertible map, so the
+term is the Gram determinant $\det(J^\top J)^{1/2}$ of \cref{sec:flow:injective}, not an ordinary
+determinant. The question is whether this objective can be used for the head. An earlier version of this
+note said that $J$ ``cannot be computed''. That statement is too strong, and the justification below
+replaces it.
+
+\textbf{What is and is not the obstacle.}
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{Computing $J$ is not the obstacle.} The trainable decoder maps a latent of dimension $10$ to
+      the image-side tensor, so its Jacobian has only $10$ columns and $J^\top J$ is a $10\times10$
+      matrix. Forward-mode differentiation gives $J$ with about $10$ passes per sample. This is exactly
+      what the bi-Lipschitz term of \cref{sec:pseudoinj:blae} already does when it evaluates the decoder
+      Jacobian. That term is a regularizer, however, and only needs approximate singular values. A
+      likelihood needs the exact $\log\det$ and its gradient at every step.
+\item \emph{Cost is a real but secondary obstacle.} Backpropagating through $\log\det(J^\top J)$ means
+      differentiating through forward-mode Jacobians of a convolutional decoder with attention, at every
+      training step and for every sample. The attention blocks must also be run with the unfused (math)
+      backend, because the fused kernels have no forward-mode rule. This is affordable for a
+      regularizer weighted by a small coefficient, but it is a heavy price for the main objective.
+\item \emph{The Gram determinant does not factorize over stages.} For square maps, $\log|\det|$ of a
+      composition is the sum of the per-stage terms, which is what made the flow section tractable
+      (\cref{eq:flow-jac-split}). For non-square maps it is not. The volume term of the composite
+      ``frozen IN-VAE decoder after head decoder'' is not the sum of a backbone term and a head term, so
+      the frozen backbone cannot be handled separately.
+\item \emph{The main obstacle: the density is degenerate.} A deterministic decoder from a
+      $10$-dimensional latent has an image that is a $10$-dimensional manifold inside a much
+      larger space. The pushforward of $p_{\hat Z}$ is then supported on that manifold and has no density
+      with respect to Lebesgue measure on the large space. The change-of-variables formula yields a
+      density only with respect to the surface measure of the manifold, and it is meaningful only for
+      points that lie on it. Real images (or their cached embeddings) never lie exactly on it, so
+      $\log p_X(x)$ is undefined without an additional off-manifold noise model. This holds no matter how
+      cheaply the Gram determinant could be computed.
+\end{itemize}
+
+\textbf{The rejected first candidate.} 
+The first idea was to keep BLAE's deterministic autoencoder
+and evaluate M1's prior at the single encoded point $\hat z=\mathrm{Enc}(x)$, as in
+\cref{eq:flow-prior-term}, with no volume term. This silently replaces the target $\log p_X(x)$ by
+$\log p_{\hat Z}(\hat z\mid u)$, which is a poor proxy to the extent that the encoder is non-injective.
+Nothing in that loss bounds or even reports the gap.
+
+\textbf{Decision: use a VAE for the trainable head.} A VAE needs neither the Gram determinant nor the
+manifold assumption. The Gaussian decoder with fixed variance is exactly the off-manifold noise model
+that makes the density on the large space well defined, and the ELBO then requires no Jacobian at all.
+This is why Ng et al.'s estimator (\cref{app:code}) and \nameref{sec:archA}/\nameref{sec:archB} all use
+an ELBO. The price is the usual, already accepted approximation: $q(\hat Z\mid X)$ only approximates the
+true posterior, and the reconstruction term only penalizes the cases where decoding fails to invert
+encoding. The Jacobian then appears in exactly one place, the BLAE bi-Lipschitz regularizer, where an
+approximate, weighted use is sufficient.
+
+\subsection{The resulting architecture}
+\label{sec:pseudoinj:arch}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+\item \textbf{Frozen backbone.} IN-VAE's pretrained encoder (\cref{sec:pseudoinj:invae}), run once 
+       per image, cached, exactly as \nameref{sec:archB} caches $\tilde x=\mathrm{BB}(x)$ -- except 
+       here $\tilde x$ is the spatial IN-VAE latent, a $32\times16\times16$ tensor, not a pooled 
+       ResNet vector.
+%-----------------
+\item \textbf{Trainable head.} A \emph{fresh, untrained} instance of Hugging Face's
+      \texttt{diffusers.AutoencoderKL} \cite{aekl} (not a pretrained checkpoint), 
+      used \emph{unmodified} -- rather 
+      than editing its \texttt{quant\_conv} and \texttt{post\_quant\_conv} internals, two small 
+      trainable wrapper blocks sit outside it and convert between its native spatial latent and M1's 
+      flat vector.
+
+      \textbf{Sizing the stock module.} \texttt{AutoencoderKL} \cite{aekl} is configured, but not 
+      altered internally, to fit the $32\times16\times16$ IN-VAE input:
+      \begin{itemize}[leftmargin=1.3em]
+      \item In diffusers the last encoder stage does not downsample, so \texttt{N} stages give 
+            \texttt{N-1} halvings.
+            
+            \texttt{down\_block\_types = ("DownEncoderBlock2D", "DownEncoderBlock2D",}\\ 
+            \texttt{"DownEncoderBlock2D")} (3 stages,
+            $16\to8\to4$), with the symmetric \texttt{up\_block\_types} triple;
+      \item \texttt{block\_out\_channels = (32, 64, 128)};
+      \item \texttt{layers\_per\_block = 1};
+      \item \texttt{in\_channels = out\_channels = 32};
+      \item \texttt{latent\_channels} left at whatever stock value keeps \texttt{quant\_conv}/
+            \texttt{post\_quant\_conv} well-defined (e.g.\ $4$); this is \emph{not} M1's $\sim\!10$-
+            dim latent -- that reduction happens entirely in the wrapper blocks below, outside the 
+            module.
+      \end{itemize}
+      With this config, stock \texttt{AutoencoderKL.encode} returns its own spatial latent 
+      distribution at $4\times4\times4$ (i.e.\ \texttt{latent\_channels}$=4$, spatial size 
+      $4\times4$), unchanged from the library's normal behavior.
+
+      \textbf{Pre-block (after \texttt{AutoencoderKL.encode}, before M1).} Flatten (or global-average-
+      pool) the module's own $4\times4\times4$ output, then a single linear layer maps this flat vector 
+      to M1's $20$ scalars $(\hat\mu,\hat{\log\sigma^2})$ (i.e.\ $10$ content/style latents). This 
+      linear layer is the actual dimensionality-reducing step; \texttt{AutoencoderKL} itself is never 
+      told about, and never computes, the $10$-dim target.
+
+      \textbf{Post-block (after M1's prior/loss, before \texttt{AutoencoderKL.decode}).} A single linear
+      layer expands the sampled $10$-dim $\hat z$ back to a flat $4\times4\times4$ vector, reshaped to
+      $4\times4\times4$ and passed into stock \texttt{AutoencoderKL.decode} unmodified.
+
+      \textbf{Why this is preferred over editing the module.} The pre/post linear layers are the only
+      hand-written, unvalidated pieces; \texttt{AutoencoderKL}'s own encode/decode path, KL
+      reparameterization, and internal conv blocks stay exactly as tested and released, with no risk of 
+      a silent behavioral change from touching \texttt{quant\_conv}/\texttt{post\_quant\_conv} directly. 
+      The cost is one extra pair of thin layers and one more bottleneck seam (module output $\to$ M1 
+      vector) to account for when tracing where distortion enters the pipeline 
+      (\cref{sec:pseudoinj:gotchas}).
+%-----------------
+\item \textbf{M1 prior, unchanged.} The content/style ANM prior of \cref{sec:use} -- \texttt{mean\_net},
+      \texttt{log\_var\_net}, the adjacency \texttt{adj\_mat}, sink-freezing -- sits on top of the head's
+      output exactly as in \cref{app:code}; nothing about the prior side changes here, only the recognition
+      network $q(\hat Z\mid X)$ feeding it.
+\item \textbf{BLAE losses, added to the head's training, computed on $\hat\mu$.} The injective (separation)
+      loss and the bi-Lipschitz term of \cref{sec:pseudoinj:blae} are added to the head's loss, evaluated
+      on the posterior mean $\hat\mu$ (never on a noisy sample $\hat z=\hat\mu+\epsilon$, since the
+      geodesic-preservation objective is inherently a statement about a deterministic map -- the
+      reparameterization noise must not enter this term). The geodesic-distance table (\texttt{GeoD}) is
+      built once from the cached IN-VAE embeddings of the training-location images.
+\end{enumerate}
+The resulting per-image loss, replacing \texttt{Trainer.step} of \cref{app:code} on the head side:
+\begin{equation}
+\begin{aligned}
+\mathcal L(x,u) &= \lambda_{\mathrm{kl}}\,\mathrm{KL}\bigl(q(\hat Z\mid x)\,\|\,p_{\hat Z}(\hat Z\mid u)\bigr) \\
+&+ \lambda_{\mathrm{rec}}\,\mathrm{recon}(\tilde x,\hat{\tilde x}) \\
+&+ \lambda_{\mathrm{inj}}\,\ell_{\mathrm{inj}}(\hat\mu) \\
+&+ \lambda_{\mathrm{biLip}}\,\ell_{\mathrm{biLip}}(\hat\mu,\mathtt{GeoD}) \\
+&+ \lambda_{\mathrm{sparse}}\,\ell_{\mathrm{sparse}}(\hat A) \\
+&+ \lambda_{\mathrm{moral}}\,\ell_{\mathrm{moral}}(\hat A, A^{t-1}),\footnotemark\\
+&\quad A^{t-1}\ \text{is the binary adjacency matrix estimated in the previous} \\
+&\quad \text{(i.e.,}\ (t\!-\!1)\text{-th) iteration}.
+\end{aligned}
+\label{eq:pseudoinj-loss}
+\end{equation}
+\footnotetext{Ng implementation dropped the moral loss term in their implementation --
+see \cref{app:code:lossterms}.}%
+where $\tilde x$ is the cached IN-VAE embedding (the reconstruction target, one level removed from the raw
+image, as in \nameref{sec:archB}), and the first, second and fifth terms are exactly \cref{app:code}'s
+\texttt{loss\_kl}, \texttt{loss\_rec} and \texttt{loss\_sparsity}. \emph{No Jacobian term appears anywhere
+in \cref{eq:pseudoinj-loss}}, by the decision of \cref{sec:pseudoinj:jacobian}.
+
+\subsection{Why this is more principled than plain Option B -- and what it still is not}
+\label{sec:pseudoinj:principled}
+Both stages of this pipeline carry an explicit, measurable regularizer toward injectivity: IN-VAE's
+reconstruction training (rewards approximate invertibility directly, unlike a classification objective);
+the head's injective and bi-Lipschitz losses (bound local distortion of distances, with a stated theoretical
+target). Plain \nameref{sec:archB} has neither -- \cref{sec:archB:gap}'s gap is totally unexamined there.
+This is genuinely better: instead of an unknown, unbounded gap, the gap here is a quantity the bi-Lipschitz
+constants put a number on.
+
+It is not a proof of injectivity, and \cref{thm:ng}'s hypothesis -- $g$ an exact $C^2$ diffeomorphism onto
+its image -- is still, strictly, violated by both IN-VAE and the head, in exactly the same
+\emph{category} of gap \cref{sec:archB:gap} already names for plain Option B. The honest claim is:
+\textbf{bounded and diagnosable distortion, not solved injectivity.} This should be stated exactly this
+plainly wherever this pipeline is invoked elsewhere in the note, the same way \cref{sec:archB:gap} states
+its own gap without softening it.
+
+\subsection{Gotchas}
+\label{sec:pseudoinj:gotchas}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{KL vs.\ injective/bi-Lipschitz tension, and the limits of what can be said about it.} The
+      KL term in \cref{eq:pseudoinj-loss} rewards posterior compression toward the prior; the injective and
+      bi-Lipschitz terms reward keeping distinct inputs' encodings apart. These pull in opposite
+      directions. The most that can honestly be said at present: Zhan et al.\ state that BLAE's losses can
+      be added to a VAE, and presumably tested this on a toy example, but \textbf{no such implementation
+      was released} (\cref{sec:pseudoinj:blae}), so this note's combination of a fresh
+      \texttt{AutoencoderKL} head with BLAE's losses is unverified engineering, not a reproduction of a
+      published result. $\lambda_{\mathrm{kl}}$ against $\lambda_{\mathrm{inj}},\lambda_{\mathrm{biLip}}$
+      needs to be tuned empirically, with no prior result to anchor the starting point.
+\item \textbf{Extreme compression ratio.} \texttt{AutoencoderKL}'s stock configurations target hundreds 
+      to thousands of latent channels, not $\sim\!10$; squeezing this far raises real underfitting/
+      posterior-collapse risk. \Cref{sec:pseudoinj:arch} above hand-tunes depth and channel width down 
+      for this reason, but the $4\times4\times4=64$ scalars $\to20$-scalar bottleneck introduced there 
+      is itself a 
+      further, unusually aggressive compression step (pooling/flattening plus one linear layer) with no 
+      precedent in the stock class to calibrate against.
+\item \textbf{Fresh initialization, no pretraining head start.} Unlike IN-VAE, the head is trained from
+      scratch on $\sim\!18\mathrm{k}$ TI images alone.
+\item \textbf{BLAE losses must be computed on $\hat\mu$, never on the sampled $\hat z$} -- this needs to 
+      be explicit in the loss code, not left implicit, since it is easy to accidentally apply it after 
+      the reparameterization step.
+\item \textbf{No VAE implementation exists in the BLAE repository at all}; combining a tested
+      \texttt{AutoencoderKL} \cite{aekl}with a from-scratch reimplementation of BLAE's loss terms is 
+      novel engineering that must be built and validated, not assumed to inherit the paper's toy-scale 
+      results.
+\item \textbf{Spatial, not pooled, embeddings, and a non-standard bottleneck.} IN-VAE's output is a
+      $32\times16\times16$ tensor, unlike \nameref{sec:archB}'s flat pooled $\sim\!3072$-dim vector; the
+      head must be conv-based to consume this properly, not a bare MLP as in \texttt{app:code}'s
+      \texttt{encoder\_mu}/\texttt{encoder\_logvar}. Because stock \texttt{AutoencoderKL} \cite{aekl} 
+      has no
+      built-in path from a spatial bottleneck to a flat per-image vector, the
+      \texttt{quant\_conv}/\texttt{post\_quant\_conv} replacement in \cref{sec:pseudoinj:arch} is
+      hand-written and untested code, not a configuration of an existing, validated path.
+\item \textbf{Resolution mismatch.} IN-VAE candidates (including the chosen one) are pretrained at 
+      $256$px; this note's pipeline currently assumes $224$px throughout (\cref{sec:archB}) and needs 
+      updating if this backbone is adopted.
+\item \textbf{Screened candidates.} E2E-VAE and MAETok/STELLAR carry alignment or semantic-shaping losses
+      that risk discarding style/location signal, the same failure mode \cref{sec:pretrain} already flags
+      for supervised ImageNet pretraining; neither is used here, and any candidate -- including the chosen
+      IN-VAE -- still needs to clear \cref{app:probe}'s linear-probe screen before being trusted.
+\item \textbf{The geodesic-distance table (\texttt{GeoD}) cost, now one stage removed from pixels.} Building
+      \texttt{GeoD} on the cached IN-VAE embeddings ($N\!\approx\!18\mathrm{k}$, still $\sim\!8192$-dim)
+      is a one-time precompute, run once per choice of backbone/embedding (not per epoch, not per
+      minibatch), with two distinct costs:
+      \begin{itemize}[leftmargin=1.3em]
+      \item \emph{Pairwise-distance step}, $O(N^2d)$. Naive broadcasting would try to materialize an
+            $N\times N\times d$ tensor ($\sim\!10$TB at $N=18\mathrm{k}$, $d=8192$) -- infeasible. Use the
+            Gram-matrix identity $\|x-y\|^2=\|x\|^2+\|y\|^2-2x^\top y$ (one matmul, $O(Nd+N^2)$ peak memory)
+            instead; confirm \texttt{sklearn}'s \texttt{kneighbors\_graph} is honoring its
+            \texttt{working\_memory} row-chunking rather than being overridden. Further remedies if still
+            too costly: reduce $d$ via PCA/random projection before this step ($8192\to256$,
+            Johnson-Lindenstrauss-justified, $\sim\!32\times$ cheaper); approximate kNN (FAISS/HNSW,
+            GPU-capable, never materializes a dense pairwise matrix); or a landmark-Isomap variant (exact
+            geodesics from a landmark subset only, e.g.\ $2\mathrm{k}$ of $18\mathrm{k}$, nearest-landmark
+            interpolation for the rest, turning $O(N^2)$ into $O(N_LN)$).
+      \item \emph{All-pairs shortest-path step}, $O(N^2\log N)$ (Dijkstra/Johnson's algorithm over the
+            resulting sparse $k$-NN graph). Remedies: shard per-source Dijkstra runs across CPU processes
+            (embarrassingly parallel); reuse the landmark trick above to cut the number of source runs from
+            $N$ to $N_L$; confirm \texttt{scipy} is selecting Johnson's algorithm (\texttt{method='J'}) for
+            the sparse case rather than defaulting to a slower per-node routine.
+      \end{itemize}
+\item \textbf{Memory.} The dense $N\times N$ \texttt{GeoD} table ($\sim\!1.3$GB at $N=18\mathrm{k}$)
+      belongs on CPU (plain array, or \texttt{numpy.memmap} if it outgrows RAM) and should never be copied
+      to GPU in full; slicing a small $B\times B$ submatrix per minibatch on CPU before moving only that
+      slice to GPU (the pattern already used for \texttt{GeoD} indexing) is correct and should be kept.
+      The real risk is upstream, in the pairwise-distance step: doing that naively on GPU can exhaust GPU
+      memory before \texttt{GeoD} is even built; the same Gram-matrix trick, or a GPU-batched approximate-
+      kNN library, avoids this. If \texttt{GeoD} itself is still tight on a given host, storing it as
+      \texttt{float16} (halving it to $\sim\!650$MB at $N=18\mathrm{k}$) is an acceptable fallback, since
+      geodesic distances are a regularization target, not a quantity needing \texttt{float32} precision.
+\item \textbf{Still not exact injectivity.} As stated in \cref{sec:pseudoinj:principled}, this pipeline
+      bounds and quantifies the gap from \cref{thm:ng}'s exact-diffeomorphism hypothesis; it does not
+      close it. Any downstream use of this note's identifiability results should carry this caveat forward
+      explicitly.
+\end{itemize}
+
+% ---------------------------------------------------------------------
+% Bibliography entries this section assumes but that are not yet in biblio.tex:
+%   zhan2026blae   -- Zhan et al., "BLAE" / bi-Lipschitz autoencoder, arXiv:2604.06701
+%   leng2025repae  -- Leng et al., REPA-E (or the specific IN-VAE checkpoint's source paper)
+%   (optionally: a citation for SD-VAE/latent-diffusion VAEs and the original
+%    VAE paper (Kingma and Welling), if you want them cited by name rather
+%    than referred to descriptively as above)
+% Also not yet defined in this note: \label{app:code:lossterms} referenced in the
+% footnote on the moral-loss term -- point it at the right subsection of app_ng_reference_impl.tex
+% (currently that file has no such label).

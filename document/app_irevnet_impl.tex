@@ -1,0 +1,217 @@
+\section{What the i-RevNet reference implementation actually computes}
+\label{app:irevnet}
+
+\Cref{sec:flow} proposes using a pretrained, frozen i-RevNet \cite{jacobsen2018} as BB, relying on it being
+an exactly invertible, dimension-preserving map with $\log|\det J_{\mathrm{BB}}(x)|=0$. This appendix records,
+in the same spirit as \cref{app:code} for the Ng et al.\ reference implementation, what the released
+i-RevNet code (\texttt{iRevNet.py}, \texttt{model\_utils.py}, \texttt{ILSVRC\_main.py}) actually computes,
+using the authors' own terminology, and derives the Jacobian claim directly from that code rather than from
+the architecture family in the abstract.
+
+\subsection{Terminology}
+\label{app:irevnet:terms}
+The following terms are the authors' own, taken verbatim from the argument help-strings in
+\texttt{ILSVRC\_main.py}:
+\begin{quote}
+\begin{flushleft}
+\begin{tabular}{@{}l@{\quad}p{0.75\linewidth}@{}}
+\texttt{--nBlocks}  & \emph{`number of blocks per stage'}\\
+\texttt{--nStrides} & \emph{`number of strides per stage'}\\
+\texttt{--nChannels}& \emph{`number of channels per stage'}\\
+\texttt{--init\_ds} & \emph{`initial downsampling'}\\
+\texttt{psi} & $\mathcal S_j$, concretely: it's the operator that does ``trade spatial size for channel 
+count, losslessly'' -- same job as \texttt{init\_ds}'s squeeze, reused inside every stride-2 block so 
+both streams' shapes keep matching $F$'s output after $F$ shrinks the spatial size. It's identity in the 
+stride-1 blocks.
+\end{tabular}
+\end{flushleft}
+\end{quote}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Stage.} One position in the \texttt{nBlocks}/\texttt{nStrides}/\texttt{nChannels} lists.
+	  Each stage is a run of blocks at one fixed channel width, with only the first block doing work on 
+	  shape.
+      \texttt{iRevNet.irevnet\_stack} loops \texttt{zip(nChannels, nBlocks, nStrides)}, one
+      (channels, depth, stride) triple per stage, expanded into \texttt{depth} blocks each.
+\item \textbf{Block.} One \texttt{irevnet\_block} instance -- the actual coupling layer, in the sense of
+      \cref{sec:flow:coupling}'s \cref{eq:additive-coupling}. Nothing coarser than this runs as a single
+      computational step.
+\item \textbf{Stride.} The help-string (`number of strides per stage') is a little misleading: it is not a
+      count, but the one stride value used by a stage. Within a stage, only the \emph{first} block receives
+      it (\texttt{strides = [stride] + [1]*(depth-1)} in \texttt{irevnet\_stack}); every other block in the
+      stage is hardcoded to stride $1$.
+\item \textbf{Channel} (an \texttt{nChannels} entry). The target channel width, per stream (the network
+      always carries a pair of streams, \cref{app:irevnet:walkthrough}), for every block in that stage.
+\item \textbf{Initial downsampling} (\texttt{init\_ds}). A one-time squeeze applied once, before stage $1$,
+      via \texttt{self.init\_psi = psi(init\_ds)}; not itself a stage or a block.
+\end{itemize}
+\newpage
+
+\subsection{The pretrained checkpoint actually used}
+\label{app:irevnet:checkpoint}
+The config distributed with the released, pretrained ImageNet checkpoint (the file accompanying
+\url{https://drive.google.com/uc?id=1eQtZIpmtVM0-JDv_2nx3xMuGKjA1beLF&export=download} on
+\cite{jacobsen2018}'s repository, there named \emph{i-RevNet 301}) is
+\begin{quote}
+\begin{flushleft}
+\begin{quote}
+\begin{flushleft}
+\texttt{RevNet(nBlocks=[6, 16, 72, 6], nStrides=[2, 2, 2, 2],}\\
+\texttt{\phantom{RevNet(}nChannels=[24, 96, 384, 1536],}\\
+\texttt{\phantom{RevNet(}nClasses=1000, init\_ds=2, dropout\_rate=0.,}\\
+\texttt{\phantom{RevNet(}affineBN=True, in\_shape=[3, 224, 224])}
+\end{flushleft}
+\end{quote}
+\end{flushleft}
+\end{quote}
+i.e.\ $4$ stages, $100$ total blocks ($6+16+72+6$), reaching top-$1$/top-$5$ accuracy $74.018\%/91.590\%$.
+This is the exact command \texttt{README.md} labels ``Train bijective i-RevNet on Imagenet,'' so the
+checkpoint is the bijective (dimension-preserving), not the channel-widening injective, variant, despite
+being considerably larger than either configuration printed in \cite{jacobsen2018}'s own Table~1 (a $29$M
+bijective and a $181$M injective model). An OpenReview discussion thread on the paper independently confirms
+the released \texttt{state\_dict} has approximately $119$M parameters -- consistent with this $100$-block
+config and inconsistent with the $29$M Table~1 figure -- and separately notes that the released
+\texttt{iRevNet.py} uses $3\times3$ kernels throughout each block's bottleneck, where the paper's Section~3.2
+describes $1\times1,3\times3,1\times1$; the authors' reply states the released weights are ``a slightly
+different version of the network described in the paper for internal reasons'' with unchanged conclusions,
+without specifying what else differs. Two things are independently verifiable directly from the code,
+however, regardless of that reply: (i) the model is dimension-preserving, checked in
+\cref{app:irevnet:walkthrough}; (ii) it is genuinely bijective and not the padded/injective variant, checked
+next.
+
+\textbf{Bijective, not injective, confirmed from the channel schedule.} \texttt{irevnet\_block.\_\_init\_\_}
+sets \texttt{self.pad = 2*out\_ch - in\_ch}, and only invokes \texttt{injective\_pad} (zero-padding extra
+channels) when \texttt{self.pad != 0 and stride == 1}. For a stage's first block (\texttt{stride=2}), this
+branch never fires regardless of \texttt{pad}'s value, since \texttt{psi} handles the shape change instead
+(\cref{app:irevnet:walkthrough}). For every later, \texttt{stride=1} block in the same stage,
+\texttt{irevnet\_stack} sets \texttt{in\_ch = 2 * channel} after each block, so
+\texttt{pad = 2*out\_ch - in\_ch = 2*channel - 2*channel = 0} exactly -- \texttt{injective\_pad} never fires
+anywhere in this config. The derivation of \cref{app:irevnet:jacobian} assumes this; a different
+\texttt{nChannels} schedule that does trigger \texttt{injective\_pad} would need that step re-examined
+separately, since it is genuinely dimension-expanding.
+\newpage
+\subsection{Forward-pass walkthrough}
+\label{app:irevnet:walkthrough}
+Traced against \texttt{iRevNet.forward} and \texttt{irevnet\_block.forward}, for the checkpoint of
+\cref{app:irevnet:checkpoint} and a $3\times224\times224$ input. Everything below carries a \emph{pair} of
+streams $(x_1,x_2)$ throughout; this is the coupling split of \cref{sec:flow:coupling}, nothing more.
+
+\paragraph{Step 0: initial downsampling, before any stage.} \texttt{x = self.init\_psi.forward(x)}: 
+\texttt{psi(init\_ds=2)} squeezes $3\times224\times224\to12\times112\times112$ (space$\to$channels, factor
+$4$), then the result is split in half: $x_1,x_2$ at $6\times112\times112$ each.
+
+\paragraph{Step 1: the four stages.} Only a stage's first block changes shape.
+\begin{center}
+\begin{tabular}{@{}lclcl@{}}
+\toprule
+stage & blocks & stride (1st block) & channels/stream & shape in $\to$ out (per stream)\\
+\midrule
+1 & 6  & 2, then $1\times5$  & 24   & $6\times112\times112\to24\times56\times56$\\
+2 & 16 & 2, then $1\times15$ & 96   & $24\times56\times56\to96\times28\times28$\\
+3 & 72 & 2, then $1\times71$ & 384  & $96\times28\times28\to384\times14\times14$\\
+4 & 6  & 2, then $1\times5$  & 1536 & $384\times14\times14\to1536\times7\times7$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Step 2: one block, stride $2$ (a stage's first block).}
+\begin{quote}
+\begin{flushleft}
+\texttt{Fx2 = self.bottleneck\_block(x2)}\\
+\texttt{if self.stride == 2:}\\
+\texttt{\phantom{if }x1 = self.psi.forward(x1)}\\
+\texttt{\phantom{if }x2 = self.psi.forward(x2)}\\
+\texttt{y1 = Fx2 + x1}\\
+\texttt{return (x2, y1)}
+\end{flushleft}
+\end{quote}
+$F$'s own leading conv has \texttt{stride=stride} built in, so $F$ itself shrinks the spatial size,
+computed on the \emph{pre}-\texttt{psi} $x_2$. \texttt{psi} is then applied to \emph{both} streams
+afterward, purely to reshape them (space$\to$channels) to match $F$'s new, smaller output shape before the
+addition; the table above confirms the reshaped $x_1,x_2$ and $Fx2$ land on the same shape at every stage.
+
+\paragraph{Step 2$'$: one block, stride $1$ (every other block -- $96$ of the $100$ total).} \texttt{psi}
+never runs; shapes never change. This is exactly $y_1=x_1,\ y_2=x_2+F(x_1)$ (up to which stream is labelled
+$1$ vs.\ $2$), plain additive coupling as in \cref{eq:additive-coupling}, with no extra step.
+
+\paragraph{The \texttt{first} flag.} Only the very first block overall (stage $1$, block $1$) skips its
+\texttt{bottleneck\_block}'s leading BatchNorm+ReLU, since the input has just been split from raw pixels and
+was never normalized by a prior block.
+
+\paragraph{Kernel sizes.} Every convolution inside \texttt{bottleneck\_block} uses \texttt{kernel\_size=3}
+(three $3\times3$ convolutions per block, bottleneck ratio \texttt{mult=4}); per
+\cref{app:irevnet:checkpoint} this is not the $1\times1,3\times3,1\times1$ pattern printed in
+\cite{jacobsen2018}'s own Section~3.2.
+
+\paragraph{End of the stack.}
+\begin{quote}
+\begin{flushleft}
+\texttt{out\_bij = merge(out[0], out[1])}\ \ \# concat -- $3072\times7\times7$\\
+\texttt{out = F.relu(self.bn1(out\_bij))}\ \ \# classifier path only, from here\\
+\texttt{out = F.avg\_pool2d(out, self.ds)}\\
+\texttt{out = self.linear(out)}\\
+\texttt{return out, out\_bij}
+\end{flushleft}
+\end{quote}
+Two separate outputs. \texttt{out} is the $1000$-way ImageNet classifier logits -- not invertible, and not
+what \cref{sec:flow} needs. \texttt{out\_bij} is the actual bijective representation, $3072\times7\times7$;
+this, not \texttt{out}, is $\tilde x=\mathrm{BB}(x)$ for \cref{sec:flow:split} onward. Using \texttt{out}
+instead would silently substitute a lossy, non-invertible quantity for the one the theorem requires.
+
+As a check: $3072\times7\times7=150528=3\times224\times224$, matching the raw pixel count exactly and
+confirming dimension-preservation end-to-end, consistent with every row of the table above.
+
+\paragraph{Inverse.} \texttt{iRevNet.inverse} runs the $100$ blocks in reverse order via
+\texttt{irevnet\_block.inverse} (subtract $F$; undo \texttt{psi} with \texttt{psi.inverse}, only on the
+stride-$2$ blocks), then \texttt{init\_psi.inverse} last -- mirroring Steps~$2\to0$ exactly.
+
+\subsection{The Jacobian of Backbone}
+\label{app:irevnet:jacobian}
+\textbf{Claim: $\log|\det J_{\mathrm{BB}}(x)|=0$ exactly, for every $x$}, derived from the code above (under
+the bijective, \texttt{injective\_pad}-free config of \cref{app:irevnet:checkpoint}), not merely asserted
+from the additive-coupling architecture family in the abstract.
+
+\paragraph{Step 1: every \texttt{psi} call has $|\det|=1$.} \texttt{psi.forward}/\texttt{.inverse}
+(\texttt{model\_utils.py}) are pure \texttt{reshape}+\texttt{permute}: every output entry equals exactly one
+input entry, relocated, with no arithmetic combination of values. As a linear map on flattened coordinates
+this is a permutation matrix, so $\det=\pm1$ regardless of input. This covers \texttt{init\_psi} (once, Step
+0) and every per-block \texttt{psi} call (once per stage, in that stage's stride-$2$ block, applied to
+\emph{both} streams).
+
+\paragraph{Step 2: every block has $|\det|=1$ -- including the part that is not obvious in advance.} The
+code's actual output order is \texttt{(x2, y1)} with \texttt{y1 = Fx2 + x1}, i.e.\ the map
+$(x_1,x_2)\mapsto(x_2,\ x_1+F(x_2))$, whose Jacobian in block form is
+\begin{equation}
+J=\begin{pmatrix}0 & I\\ I & \partial F/\partial x_2\end{pmatrix}.
+\label{eq:irn-block-jac}
+\end{equation}
+Swapping the two row-blocks gives $\begin{pmatrix}I & \partial F/\partial x_2\\ 0 & I\end{pmatrix}$ --
+upper-triangular, identity diagonal, $\det=1$ -- and a row-block swap only changes the sign of the
+determinant, never its magnitude. So $|\det J_{\text{block}}|=1$ exactly, and 
+$\partial F/\partial x_2$ -- everything the BatchNorm/ReLU/conv stack inside \linebreak
+\texttt{bottleneck\_block} computes -- cancels out of the
+determinant entirely; this is also why $F$ itself never needs to be invertible. For a stride-$2$ block, 
+this structure composes with the (Step~1) \texttt{psi} application on both streams; a product of two
+unit-magnitude determinants is itself unit-magnitude.
+
+\paragraph{Step 3: the final \texttt{merge}.} \texttt{out\_bij = merge(out[0], out[1])} is
+\texttt{torch.cat} -- again a pure reshape, $|\det|=1$.
+
+\paragraph{Step 4: compose across the whole network.} Log-determinant of a composition is the sum of the
+pieces' log-determinants:
+\begin{equation}
+\log\bigl|\det J_{\mathrm{BB}}(x)\bigr| = \underbrace{0}_{\texttt{init\_psi}} \!\!+
+\sum_{\substack{\text{100}\\\text{blocks}}} \underbrace{0}_{\text{each block}} \!\!+\; 
+\underbrace{0}_{\texttt{merge}} \;=\; 0,
+\label{eq:irn-total-jac}
+\end{equation}
+identically in $x$. \Cref{eq:irn-total-jac} is what \cref{eq:flow-jac-split,eq:flow-loss} use as
+$\log|\det J_{\mathrm{BB}}(x)|=0$; \cref{rem:irevnet-structure}'s open question about whether the per-
+stage $\mathcal S_j$ operator (identified there as \texttt{psi}) might carry its own non-trivial log-det 
+term is resolved by Step~1 above: it does not, in this implementation.
+
+\paragraph{Scope of this derivation.} It assumes the \texttt{injective\_pad}-free channel schedule 
+confirmed
+in \cref{app:irevnet:checkpoint} for the actual released checkpoint. A different \texttt{nChannels}
+configuration for which \texttt{pad != 0} at some \texttt{stride=1} block would introduce a genuinely
+dimension-expanding padding step there, and \cref{eq:irn-total-jac} would not apply to that variant 
+without separately accounting for it.
