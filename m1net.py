@@ -13,20 +13,24 @@ WHAT IS IN THIS FILE, AND WHERE EACH PIECE COMES FROM
                    layers. Gives q(z|x), z, x_hat.
   ADJMatrix        Ng et al. reference code (networks.py), ported.
   NodeWiseMLP      New. Content mechanism f_i (shared or per-node weights).
+  GateConfig       (config.py) numbers of the sink-check gate.
+  SinkGate         New. Pure-python state machine of the sink-check gate
+                   (when to freeze). No torch; the tensor work is in M1Prior.
   M1Prior          Ng et al. prior (ANM), extended per the note: domain
                    conditioning split by block (content on c=(y,t), style
-                   on r=(t,e)). Includes Ng's sink-freezing heuristic.
+                   on r=(t,e)). Includes Ng's sink-freezing heuristic and
+                   OWNS the gate that decides when to apply it.
   M1Net            Ties HEAD + M1Prior together. This is the module a
                    Trainer optimizes.
   (All loss computations, including the BLAE ones, live in losses.py.)
 
 WHAT IS *NOT* IN THIS FILE
-    * any loss (see losses.py: reconstruction, KL, sparsity, moral,
-      BLAE injective, BLAE bi-Lipschitz); the network only exposes what they
+    * any loss (see losses.py); the network only exposes what they
       need (out["x_hat"], out["log_q"], out["log_p"], out["adj"],
       out["current_adj"], out["mu"], and head.decode)
-    * optimizers, schedules, the GeoD table, the training loop, calling
-      M1Net.find_sinks_and_fix() every `check_epoch` epochs (Trainer's job)
+    * optimizers, schedules, the GeoD table, the training loop. The model
+      (model.py) calls M1Net.gate_end_epoch(epoch) when the Trainer asks it
+      to run the end-of-epoch scheduling.
 
 =======================================================================
 PIPELINE
@@ -65,6 +69,35 @@ exist; like Ng, the Trainer should use the single-sample estimate
 Both are returned per image, summed over the D latents.
 
 =======================================================================
+THE SINK-CHECK GATE (M1Prior.gate_end_epoch)
+=======================================================================
+The gate decides WHEN the sink-freezing heuristic is applied. It is called
+once per epoch, at the end of the epoch, by the model (which the Trainer
+asks to do the end-of-epoch scheduling). Two modes (GateConfig.mode):
+
+  "stable"  (scheduling on). After each epoch, compare the binarized
+            unresolved block with the previous epoch's. stable_run counts the
+            consecutive epochs with no change (reset on any flip, and when
+            the set of unfrozen nodes changes). When stable_run >= W(m),
+            freeze ALL zero columns at once and reset the counters. If
+            epochs_since_reset reaches cap(m) first, nothing is frozen:
+            the gate reports the flip history, the raw entries nearest 0.5
+            and the nodes frozen so far, and asks the run to stop.
+            m = number of unfrozen nodes; W(m) and cap(m) come from
+            GateConfig.table.
+  "clock"   (scheduling off). Freeze all zero columns every `check_epoch`
+            epochs, as in Ng's loop. No stability rule, no cap.
+
+The gate returns a GateResult: events ("first_sink_check", "all_frozen",
+"cap_hit:sink_check"), a stop reason if any, the global ids of the nodes
+frozen in this call, and an info dict (cap case). No margin (hysteresis) in
+the binarization and no intervention at the cap yet: deferred.
+
+Gate state is plain python (SinkGate.state_dict) and goes into the
+checkpoint through M1Prior.schedule_state(); sure_mask / sure_adj are
+buffers and are saved with the model.
+
+=======================================================================
 DEVIATIONS FROM Ng's SINK-FREEZING CODE (deliberate; read this)
 =======================================================================
 Ng's find_sinknodes_and_fix indexes the global sure_mask with indices taken
@@ -80,14 +113,20 @@ is unchanged, and is still a mask heuristic, not the paper's derivative test.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from config import GateConfig
 from head import HEAD, HeadConfig
+
+# events emitted by the gate (the model routes them; same strings everywhere)
+EV_FIRST_SINK_CHECK = "first_sink_check"
+EV_ALL_FROZEN = "all_frozen"
+EV_CAP_SINK = "cap_hit:sink_check"
 
 
 # ======================================================================
@@ -154,6 +193,101 @@ class NodeWiseMLP(nn.Module):
 
 
 # ======================================================================
+# Sink-check gate: pure-python state machine (GateConfig lives in config.py)
+# ======================================================================
+class SinkGate:
+    """
+    Pure-python state machine of the gate (no torch). M1Prior feeds it the
+    binarized unresolved block and applies what it decides.
+
+    step(epoch, bits, keep_ids) -> "wait" | "freeze" | "cap"
+        bits      flat tuple/list of 0/1 (the binarized unresolved block,
+                  row-major) of the nodes in keep_ids.
+        keep_ids  global ids of the unfrozen nodes, in order.
+    record_freeze(epoch, nodes) -> True iff this was the first successful
+        check; logs the freeze and resets the counters.
+
+    State (state_dict; JSON-friendly): stable_run, epochs_since_reset, prev,
+    prev_keep, flip_history (since the last reset; None = no reference
+    epoch), freeze_log ([epoch, node] pairs), first_check_done.
+    """
+
+    def __init__(self, cfg: GateConfig):
+        self.cfg = cfg
+        self.stable_run = 0
+        self.epochs_since_reset = 0
+        self.prev: Optional[List[int]] = None
+        self.prev_keep: Optional[List[int]] = None
+        self.flip_history: List[Optional[int]] = []
+        self.freeze_log: List[List[int]] = []
+        self.first_check_done = False
+
+    def _reset(self) -> None:
+        self.stable_run, self.epochs_since_reset = 0, 0
+        self.prev, self.prev_keep, self.flip_history = None, None, []
+
+    def step(self, epoch: int, bits, keep_ids: List[int]) -> str:
+        if self.cfg.mode == "clock":
+            ce = self.cfg.check_epoch
+            return "freeze" if (ce > 0 and epoch % ce == 0) else "wait"
+        bits, keep_ids = [int(b) for b in bits], [int(k) for k in keep_ids]
+        if self.prev is None or self.prev_keep != keep_ids:
+            flips = None
+            self.stable_run = 0
+        else:
+            flips = sum(1 for a, b in zip(bits, self.prev) if a != b)
+            self.stable_run = self.stable_run + 1 if flips == 0 else 0
+        self.flip_history.append(flips)
+        self.epochs_since_reset += 1
+        self.prev, self.prev_keep = bits, keep_ids
+        w, cap = self.cfg.params(len(keep_ids))
+        if self.stable_run >= w:
+            return "freeze"
+        if self.epochs_since_reset >= cap:
+            return "cap"
+        return "wait"
+
+    def record_freeze(self, epoch: int, nodes: List[int]) -> bool:
+        for n in nodes:
+            self.freeze_log.append([int(epoch), int(n)])
+        first = (not self.first_check_done) and len(nodes) > 0
+        if first:
+            self.first_check_done = True
+        self._reset()
+        return first
+
+    def state_dict(self) -> dict:
+        return {
+            "stable_run": self.stable_run,
+            "epochs_since_reset": self.epochs_since_reset,
+            "prev": None if self.prev is None else list(self.prev),
+            "prev_keep": None if self.prev_keep is None else list(self.prev_keep),
+            "flip_history": list(self.flip_history),
+            "freeze_log": [list(x) for x in self.freeze_log],
+            "first_check_done": self.first_check_done,
+        }
+
+    def load_state_dict(self, s: dict) -> None:
+        self.stable_run = s["stable_run"]
+        self.epochs_since_reset = s["epochs_since_reset"]
+        self.prev = None if s["prev"] is None else list(s["prev"])
+        self.prev_keep = None if s["prev_keep"] is None else list(s["prev_keep"])
+        self.flip_history = list(s["flip_history"])
+        self.freeze_log = [list(x) for x in s["freeze_log"]]
+        self.first_check_done = s["first_check_done"]
+
+
+@dataclass
+class GateResult:
+    """What the gate returns at the end of an epoch."""
+
+    events: List[str] = field(default_factory=list)
+    stop: Optional[str] = None  # reason, if the run must stop (cap hit)
+    froze: List[int] = field(default_factory=list)  # global ids frozen now
+    info: dict = field(default_factory=dict)  # cap case: diagnostics
+
+
+# ======================================================================
 # Config
 # ======================================================================
 @dataclass
@@ -176,6 +310,8 @@ class M1NetConfig:
         "per_node" : a distinct f_i per content node.
     prior_logvar_min, prior_logvar_max : float | None
         Clamp on prior log-variances (content and style), for stability.
+    gate : GateConfig
+        Sink-check gate numbers (defaults overridable).
     """
 
     head: HeadConfig
@@ -189,6 +325,7 @@ class M1NetConfig:
     mechanism_sharing: str = "shared"
     prior_logvar_min: Optional[float] = -10.0
     prior_logvar_max: Optional[float] = 10.0
+    gate: GateConfig = field(default_factory=GateConfig)
 
     def validate(self) -> None:
         if self.n_content < 1 or self.n_style < 0:
@@ -203,6 +340,7 @@ class M1NetConfig:
         for name in ("n_species", "n_times", "n_locations"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be >= 1.")
+        self.gate.validate()
 
 
 # ======================================================================
@@ -213,8 +351,9 @@ class M1Prior(nn.Module):
     The M1 prior p(z | y, t, e) over the D latents, plus the content graph.
 
     Holds: content_emb, style_emb, content mechanism f, content log-variance
-    net, style (mean, logvar) net, ADJMatrix, and the sink-freezing buffers
-    sure_mask / sure_adj (both (n_content, n_content), not trainable).
+    net, style (mean, logvar) net, ADJMatrix, the sink-freezing buffers
+    sure_mask / sure_adj (both (n_content, n_content), not trainable), and
+    the sink-check gate (self.gate, a SinkGate).
     """
 
     def __init__(self, cfg: M1NetConfig):
@@ -244,6 +383,7 @@ class M1Prior(nn.Module):
         self.adj_mat = ADJMatrix(nc)
         self.register_buffer("sure_mask", torch.zeros(nc, nc))
         self.register_buffer("sure_adj", torch.zeros(nc, nc))
+        self.gate = SinkGate(cfg.gate)  # plain python state, not a buffer
 
     # ---------------- graph / sink freezing ----------------
     def _unfrozen(self) -> torch.Tensor:
@@ -265,21 +405,19 @@ class M1Prior(nn.Module):
         return self.sure_mask * self.sure_adj + (1 - self.sure_mask) * adj
 
     @torch.no_grad()
-    def find_sinks_and_fix(self) -> bool:
+    def _freeze_zero_columns(self) -> List[int]:
         """
         Ng's sink-freezing heuristic (see module docstring for the fixed
         indexing). Among unfrozen nodes, any node whose column in the hard
         adjacency restricted to unfrozen nodes sums to 0 (it has no
         remaining children) is declared a sink of the remaining graph and
         frozen: its row (parents) and column (children) are copied into
-        sure_adj and masked so they stop being learned.
-
-        Call from the Trainer every `check_epoch` epochs.
-        Returns True iff every content node is now frozen (stop signal).
+        sure_adj and masked so they stop being learned. All such nodes are
+        frozen at once. Returns their global ids.
         """
         keep = self._unfrozen()
         if len(keep) == 0:
-            return True
+            return []
         hard = self.adj_mat(soft=False).detach()
         cur = hard[keep][:, keep]
         sinks: List[int] = [
@@ -290,7 +428,67 @@ class M1Prior(nn.Module):
             self.sure_mask[g, :] = 1
             self.sure_adj[:, g] = hard[:, g]
             self.sure_adj[g, :] = hard[g, :]
+        return sinks
+
+    @torch.no_grad()
+    def find_sinks_and_fix(self) -> bool:
+        """
+        Apply the heuristic once, unconditionally (kept for direct use).
+        Returns True iff every content node is now frozen.
+        """
+        self._freeze_zero_columns()
         return len(self._unfrozen()) == 0
+
+    @torch.no_grad()
+    def gate_end_epoch(self, epoch: int) -> GateResult:
+        """
+        The sink-check gate; call once at the END of every epoch (the model
+        does it when the Trainer asks for the end-of-epoch scheduling).
+        See the module docstring for the two modes. Epochs are 1-based.
+        """
+        res = GateResult()
+        keep = self._unfrozen()
+        if len(keep) == 0:
+            return res
+        keep_ids = [int(k) for k in keep]
+        hard = self.adj_mat(soft=False).detach()
+        bits = (hard[keep][:, keep] > 0.5).flatten().int().tolist()
+        action = self.gate.step(epoch, bits, keep_ids)
+        if action == "freeze":
+            sinks = self._freeze_zero_columns()
+            res.froze = sinks
+            if self.gate.record_freeze(epoch, sinks):
+                res.events.append(EV_FIRST_SINK_CHECK)
+            if len(self._unfrozen()) == 0:
+                res.events.append(EV_ALL_FROZEN)
+        elif action == "cap":
+            m = len(keep_ids)
+            raw = self.adj_mat(soft=True).detach()[keep][:, keep]
+            tri = torch.tril_indices(m, m, offset=-1)
+            vals = raw[tri[0], tri[1]]
+            order = (vals - 0.5).abs().argsort()[:5].tolist()
+            near = [(keep_ids[int(tri[0][o])], keep_ids[int(tri[1][o])], float(vals[o]))
+                    for o in order]
+            w, cap = self.cfg.gate.params(m)
+            res.events.append(EV_CAP_SINK)
+            res.stop = (f"sink check: no stable adjacency after "
+                        f"{self.gate.epochs_since_reset} epochs with {m} unfrozen "
+                        f"nodes (cap {cap}, W {w}); nothing frozen.")
+            res.info = {
+                "flip_history": list(self.gate.flip_history),
+                "nearest_to_half": near,  # (row, col, raw value), global ids
+                "frozen_so_far": [list(x) for x in self.gate.freeze_log],
+                "unfrozen": keep_ids,
+            }
+        return res
+
+    def schedule_state(self) -> dict:
+        """Non-learnable gate state (plain python). sure_mask / sure_adj are
+        buffers and are saved with the model's state_dict."""
+        return self.gate.state_dict()
+
+    def load_schedule_state(self, s: dict) -> None:
+        self.gate.load_state_dict(s)
 
     # ---------------- prior parameters ----------------
     def _clamp(self, lv: torch.Tensor) -> torch.Tensor:
@@ -395,8 +593,18 @@ class M1Net(nn.Module):
         return self.head.encode(x)[0]
 
     def find_sinks_and_fix(self) -> bool:
-        """Delegates to M1Prior.find_sinks_and_fix (Trainer calls this)."""
+        """Delegates to M1Prior.find_sinks_and_fix (unconditional, one shot)."""
         return self.prior.find_sinks_and_fix()
+
+    def gate_end_epoch(self, epoch: int) -> GateResult:
+        """Delegates to M1Prior.gate_end_epoch (the model calls this)."""
+        return self.prior.gate_end_epoch(epoch)
+
+    def schedule_state(self) -> dict:
+        return self.prior.schedule_state()
+
+    def load_schedule_state(self, s: dict) -> None:
+        self.prior.load_schedule_state(s)
 
     # --- optimizer helpers: fixes Ng's bug where the adjacency was in both
     #     optimizer parameter lists and therefore stepped twice ---
@@ -430,4 +638,4 @@ if __name__ == "__main__":
     for k, v in out.items():
         print(f"{k:13s}{tuple(v.shape)}")
     out["x_hat"].sum().backward()
-    print("frozen all?", net.find_sinks_and_fix())
+    print("gate, epoch 1:", net.gate_end_epoch(1))
