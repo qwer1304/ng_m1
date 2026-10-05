@@ -9,6 +9,7 @@ Pipeline built here (each piece lives in its own file):
     losses                         -> losses.py
     model = network + losses       -> model.py
     training loop, checkpoints     -> trainer.py
+    output formatting helpers      -> utils.py
 
 =======================================================================
 WHERE EACH SETTING LIVES
@@ -19,7 +20,18 @@ WHERE EACH SETTING LIVES
         --set loss.lambda_kl=2     (repeatable; dotted overrides)
     Nothing about them is a flag of this file.
   * Network shape (n_content, n_style, ae_*, ...), data selection, optimizer
-    settings, batch size, validation split: flags of this file.
+    settings, batch size, validation split, terminal output: flags of this
+    file.
+
+=======================================================================
+TERMINAL OUTPUT (Kaggle-safe progress bar)
+=======================================================================
+  --ncols N       total width of the tqdm line (default 80)
+  --bar N         length of the progress bar itself (default 50)
+  --term_zoom Z   browser zoom of the terminal, one of 80/90/100/110, so that
+                  "virtual line breaks" fall at the same place whatever the
+                  zoom (see utils.py). Default None: rely on the terminal to
+                  wrap.
 
 =======================================================================
 INPUT DATA
@@ -62,15 +74,16 @@ RESUME
 =======================================================================
 --resume out_dir/last.pt restarts from the checkpoint: the arguments the run
 was started with (saved in the checkpoint) and the saved RunConfig are used;
-only --device and any NEW --set overrides (applied on top of the saved
-RunConfig, e.g. a larger schedule.max_epochs) are taken from the command
-line. The Trainer restores model, schedule state, optimizers and RNG.
+only --device, the terminal-output flags (--ncols, --bar, --term_zoom) and
+any NEW --set overrides (applied on top of the saved RunConfig, e.g. a larger
+schedule.max_epochs) are taken from the command line. The Trainer restores
+model, schedule state, optimizers and RNG.
 
 =======================================================================
 EXAMPLES
 =======================================================================
 python main.py --features ti.pt --train_locations 36 38 43 --n_content 8 --n_style 2 \\
-    --geod_mode full --geod_jobs 8 --set schedule.max_epochs=300
+    --geod_mode full --geod_jobs 8 --set schedule.max_epochs=300 --term_zoom 100
 python main.py --synthetic --set schedule.max_epochs=4 --set loss.lambda_inj=0
 python main.py --resume runs/20261004-101500/last.pt --set schedule.max_epochs=400
 """
@@ -94,6 +107,7 @@ from ti_dataset import load_ti_dataset
 from m1net import M1NetConfig
 from model import M1Model
 from trainer import Trainer, TrainerConfig
+from utils import ZOOM_MAP
 
 
 def parse():
@@ -141,6 +155,11 @@ def parse():
     p.add_argument("--log_every", type=int, default=1)
     p.add_argument("--ckpt_every", type=int, default=1)
     p.add_argument("--no_val_acc", action="store_true")
+    # terminal output (progress bar, virtual line breaks; see utils.py)
+    p.add_argument("--ncols", type=int, default=80, help="number of columns in terminal")
+    p.add_argument("--bar", type=int, default=50, help="length of progress bar")
+    p.add_argument("--term_zoom", type=int, default=None, choices=sorted(ZOOM_MAP),
+                   help="zoom factor of terminal to support virtual line breaks in tqdm")
     # run
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed", type=int, default=0)
@@ -226,7 +245,9 @@ def get_geod(a, x):
 # ----------------------------------------------------------------------
 def resolve_args_and_cfg(a):
     """Return (args, run_cfg, ckpt_or_None). Fresh run: CLI args, config file
-    plus --set. Resume: saved args and saved RunConfig, plus new --set only."""
+    plus --set. Resume: saved args and saved RunConfig, plus new --set only.
+    Terminal-output flags (--ncols, --bar, --term_zoom) and --device always
+    come from the command line, since they do not affect the run itself."""
     if a.resume is None:
         cfg = RunConfig()
         if a.config:
@@ -242,6 +263,7 @@ def resolve_args_and_cfg(a):
         print("note: --config ignored on resume (the saved RunConfig is used); use --set for changes")
     b = argparse.Namespace(**saved)
     b.resume, b.device, b.config = a.resume, device, saved.get("config")
+    b.ncols, b.bar, b.term_zoom = a.ncols, a.bar, a.term_zoom
     b.set = list(saved.get("set", [])) + new_set
     cfg = RunConfig.from_dict(ck["run_cfg"]).with_overrides(new_set).finalize()
     print(f"resuming from {a.resume} (epoch {ck['epoch']}); using the saved arguments"
@@ -309,10 +331,13 @@ def main():
     geod = get_geod(a, x) if model.needs_geod() else None
 
     # ---- trainer ----
+    # getattr: a checkpoint written before these flags existed has no such keys
     tr_cfg = TrainerConfig(
         lr=a.lr, adj_lr=a.adj_lr, adj_momentum=a.adj_momentum, grad_clip=a.grad_clip,
         device=a.device, log_every=a.log_every, ckpt_every=a.ckpt_every,
         val_acc=not a.no_val_acc,
+        ncols=getattr(a, "ncols", 80), bar=getattr(a, "bar", 50),
+        term_zoom=getattr(a, "term_zoom", None),
     )
     trainer = Trainer(model, tr_cfg, out_dir=a.out_dir, geod=geod, run_args=vars(a))
     if ck is not None:

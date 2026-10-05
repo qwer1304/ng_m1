@@ -31,6 +31,9 @@ ONE EPOCH
 =======================================================================
   1. train pass: one optimizer step per batch; epoch means of every
      UNWEIGHTED term are recorded (rec, kl, sparse, moral, inj, bilip, loss).
+     A tqdm bar counts the minibatches; its description carries
+     "epoch [e/E]" and the running means (E = schedule.max_epochs, an upper
+     bound: the run may stop earlier).
   2. validation pass (no grad): val_rec, val_kl (same estimators as in
      training, z sampled), val_acc_macro (see below).
   3. stats = train means + val_* ; status = model.end_epoch(epoch, stats).
@@ -43,6 +46,16 @@ Validation accuracy: species predicted from the content latents only, with
 the time of day observed: argmax_y log p(mu_c | y, t, e_content-free prior),
 uniform label prior, z = mu. Macro accuracy (mean of per-species recall).
 It uses the M1 prior as it currently is (frozen and unfrozen nodes alike).
+
+=======================================================================
+TERMINAL OUTPUT (Kaggle-safe)
+=======================================================================
+Text sent to the terminal uses "virtual line breaks" (utils.VB marks where a
+break is wanted; utils.apply_virtual_breaks turns the markers into padding),
+so lines break at the same place whatever the browser zoom. Files
+(events.log, log.jsonl) never contain the padding: markers are replaced by a
+space there. TrainerConfig.ncols / bar / term_zoom control the bar width and
+the zoom of the terminal (None: rely on the terminal to wrap).
 
 =======================================================================
 FAILURE LOG
@@ -112,6 +125,7 @@ from geodesic import GeodesicTable
 from losses import kl_mc
 from model import M1Model
 from probe import grad_scale_probe
+from utils import VB, apply_virtual_breaks, make_bar, set_bar_desc, strip_markers
 
 TERMS = ("loss", "kl", "rec", "sparse", "moral", "inj", "bilip")
 
@@ -135,6 +149,10 @@ class TrainerConfig:
     ckpt_every           write last.pt every this many epochs (0 = only at stop)
     val_acc              compute the validation accuracy (costs n_species
                          prior passes per validation batch)
+    ncols                total width of the tqdm line
+    bar                  length of the progress bar itself
+    term_zoom            browser zoom (80/90/100/110) for virtual line
+                         breaks; None = rely on the terminal to wrap
     """
 
     lr: float = 1e-3
@@ -145,6 +163,9 @@ class TrainerConfig:
     log_every: int = 1
     ckpt_every: int = 1
     val_acc: bool = True
+    ncols: int = 80
+    bar: int = 50
+    term_zoom: Optional[int] = None
 
 
 def _jsonable(o):
@@ -191,14 +212,23 @@ class Trainer:
         self.outcome: Optional[str] = None
 
     # ------------------------------------------------------------------
-    # event log
+    # terminal output and event log
     # ------------------------------------------------------------------
+    def _out(self, text: str) -> None:
+        """Print to the terminal; VB markers in `text` become virtual breaks."""
+        print(apply_virtual_breaks(text, self.cfg.term_zoom, marker=VB))
+
+    @property
+    def _epochs_total(self) -> int:
+        """Upper bound on the number of epochs (schedule.max_epochs)."""
+        return self.model.rules.max_epochs
+
     def _event(self, kind: str, text: str) -> None:
-        """Append one line to events.log and print it."""
-        line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] epoch {self._cur:4d} {kind}: {text}"
-        print(line)
+        """Append one line to events.log (plain) and print it (with breaks)."""
+        head = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] epoch {self._cur:4d} {kind}:"
+        self._out(f"{head}{VB}{text}")
         with open(os.path.join(self.out_dir, "events.log"), "a") as f:
-            f.write(line + "\n")
+            f.write(strip_markers(f"{head} {text}") + "\n")
 
     def _write_json(self, name: str, obj) -> None:
         with open(os.path.join(self.out_dir, name), "w") as f:
@@ -230,14 +260,26 @@ class Trainer:
         self.adj_opt.step()
         return vals
 
-    def _train_epoch(self, loader) -> Dict[str, float]:
+    def _train_epoch(self, loader, epoch: int) -> Dict[str, float]:
+        """Train pass with a minibatch progress bar. The bar description is
+        'epoch [e/E]' plus the running means of the unweighted terms."""
         self.model.train()
         sums, n = {k: 0.0 for k in TERMS}, 0
-        for batch in loader:
-            r = self.step(batch)
-            for k in TERMS:
-                sums[k] += r[k]
-            n += 1
+        bar = make_bar(loader, ncols=self.cfg.ncols, bar=self.cfg.bar)
+        try:
+            for batch in bar:
+                r = self.step(batch)
+                for k in TERMS:
+                    sums[k] += r[k]
+                n += 1
+                desc = (f"epoch [{epoch}/{self._epochs_total}]{VB}"
+                        f"loss={sums['loss'] / n:.4f} kl={sums['kl'] / n:.4f} "
+                        f"rec={sums['rec'] / n:.4f}{VB}"
+                        f"sparse={sums['sparse'] / n:.3f} moral={sums['moral'] / n:.3f} "
+                        f"inj={sums['inj'] / n:.4f} bilip={sums['bilip'] / n:.4f}")
+                set_bar_desc(bar, desc, self.cfg.term_zoom, marker=VB)
+        finally:
+            bar.close()
         return {k: sums[k] / max(n, 1) for k in TERMS}
 
     # ------------------------------------------------------------------
@@ -298,7 +340,7 @@ class Trainer:
             self._cur = epoch
             t0 = time.time()
             try:
-                stats = self._train_epoch(train_loader)
+                stats = self._train_epoch(train_loader, epoch)
             except NonFiniteLoss as ex:
                 reason, outcome_kind = str(ex), "nonfinite_loss"
                 self._event("FAILURE", f"nonfinite_loss: {ex.terms}")
@@ -344,17 +386,20 @@ class Trainer:
         for w in status.warnings:
             self._event("WARNING", w)
         if c.log_every and s["epoch"] % c.log_every == 0:
-            extra = ""
+            parts = [
+                f"epoch [{s['epoch']}/{self._epochs_total}] done",
+                f"loss={s['loss']:.4f} kl={s['kl']:.4f} rec={s['rec']:.4f}",
+                f"sparse={s['sparse']:.3f} moral={s['moral']:.3f} "
+                f"inj={s['inj']:.4f} bilip={s['bilip']:.4f}",
+            ]
             if "val_rec" in s:
-                extra += f" vrec={s['val_rec']:.4f} vkl={s['val_kl']:.3f}"
-            if "val_acc_macro" in s:
-                extra += f" vacc={s['val_acc_macro']:.3f}"
+                v = f"vrec={s['val_rec']:.4f} vkl={s['val_kl']:.3f}"
+                if "val_acc_macro" in s:
+                    v += f" vacc={s['val_acc_macro']:.3f}"
+                parts.append(v)
             nun = len(self.model.net.prior._unfrozen())
-            print(
-                f"epoch {s['epoch']:4d} loss={s['loss']:.4f} kl={s['kl']:.4f} rec={s['rec']:.4f} "
-                f"sparse={s['sparse']:.3f} moral={s['moral']:.3f} inj={s['inj']:.4f} "
-                f"bilip={s['bilip']:.4f}{extra} unfrozen={nun} ({s['seconds']:.1f}s)"
-            )
+            parts.append(f"unfrozen={nun} ({s['seconds']:.1f}s)")
+            self._out(VB.join(parts))
 
     # ------------------------------------------------------------------
     # gradient-scale probe
@@ -383,8 +428,8 @@ class Trainer:
         res = grad_scale_probe(self.model, batches, lr_by_param, include_bilip)
         with open(os.path.join(self.out_dir, "gradscale.jsonl"), "a") as f:
             f.write(json.dumps({"epoch": epoch, "terms": res}, default=_jsonable) + "\n")
-        print(f"probe epoch {epoch} (norm = RSS of lr-scaled grads, unweighted; "
-              f"scaler at target weight; band [{pc.band_lo:g}, {pc.band_hi:g}])")
+        self._out(f"probe epoch {epoch}{VB}(norm = RSS of lr-scaled grads, unweighted;{VB}"
+                  f"scaler at target weight; band [{pc.band_lo:g}, {pc.band_hi:g}])")
         for name, r in res.items():
             if r["norm"] is None:
                 print(f"  {name:7s} skipped: {r['skipped']}")
@@ -392,8 +437,9 @@ class Trainer:
             sc = "n/a" if r["scaler_at_target"] is None else f"{r['scaler_at_target']:.3g}"
             ws = "n/a" if r["suggested_weight"] is None else f"{r['suggested_weight']:.3g}"
             note = " (SGD, unvalidated)" if r["adj_only"] else ""
-            print(f"  {name:7s} norm={r['norm']:.3g} target_w={r['target']:g} ramp={r['ramp_fraction']:.2f} "
-                  f"scaler={sc} w*={ws} flag={r['flag']}{note}")
+            self._out(f"  {name:7s} norm={r['norm']:.3g} target_w={r['target']:g} "
+                      f"ramp={r['ramp_fraction']:.2f}{VB}"
+                      f"    scaler={sc} w*={ws} flag={r['flag']}{note}")
             if r["flag"] in ("weak", "strong", "no_gradient"):
                 self._event("PROBE-FLAG", f"{name}: {r['flag']} (scaler at target {sc}, "
                             f"suggested weight {ws}){note}")
