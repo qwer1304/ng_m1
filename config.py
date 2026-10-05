@@ -15,6 +15,7 @@ THE TREE
     gate      GateConfig     sink-check gate (mode, check_epoch, W/cap table)
     schedule  ScheduleRules  the global, cross-loss rules (caps, run control)
                              and the global on/off switch
+    probe     ProbeConfig    gradient-scale probe (how often, band, constant)
 
 Each consumer receives only its own sub-config.
 
@@ -28,6 +29,7 @@ it and are set by RunConfig.finalize(), whatever the user wrote there:
 So "disabled" means: every loss uses its target weight from epoch 1, the
 sink check runs on the fixed clock (every gate.check_epoch epochs), there
 are no caps and no fine-tune phase, and the run stops only at max_epochs.
+(The probe is independent of this switch.)
 
 =======================================================================
 HOW VALUES ARRIVE (main.py)
@@ -213,6 +215,49 @@ class ScheduleRules:
 
 
 # ======================================================================
+# Gradient-scale probe
+# ======================================================================
+@dataclass
+class ProbeConfig:
+    """
+    The gradient-scale probe (probe.py, called by the Trainer between
+    epochs). Diagnostic only: it never changes a weight and never stops a run.
+
+    enabled      False = never probe.
+    every        probe every this many epochs (0 = never).
+    bilip_every  BILIP is expensive; it is included only every this many
+                 epochs (0 = never probed). Probing happens only at epochs
+                 that are also multiples of `every`.
+    n_batches    training batches per probe; the per-term norms are averaged.
+    target       the constant of the Adam heuristic scaler = target /
+                 (LR * ||grad||); 0.01 (the tuning rule: each weight is
+                 tuned until its scaler is about 1).
+    band_lo, band_hi
+                 a term is flagged "strong" if its scaler at the target
+                 weight is below band_lo and "weak" if above band_hi
+                 (loose band, flags only).
+    """
+
+    enabled: bool = True
+    every: int = 5
+    bilip_every: int = 25
+    n_batches: int = 1
+    target: float = 0.01
+    band_lo: float = 0.1
+    band_hi: float = 10.0
+
+    def validate(self) -> None:
+        if self.every < 0 or self.bilip_every < 0:
+            raise ValueError("probe every / bilip_every must be >= 0.")
+        if self.n_batches < 1:
+            raise ValueError("probe n_batches must be >= 1.")
+        if self.target <= 0:
+            raise ValueError("probe target must be > 0.")
+        if not 0.0 < self.band_lo < self.band_hi:
+            raise ValueError("probe needs 0 < band_lo < band_hi.")
+
+
+# ======================================================================
 # The tree
 # ======================================================================
 @dataclass
@@ -220,6 +265,7 @@ class RunConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     gate: GateConfig = field(default_factory=GateConfig)
     schedule: ScheduleRules = field(default_factory=ScheduleRules)
+    probe: ProbeConfig = field(default_factory=ProbeConfig)
 
     # ---------------- derived fields + validation ----------------
     def finalize(self) -> "RunConfig":
@@ -234,6 +280,7 @@ class RunConfig:
         self.loss.validate()
         self.gate.validate()
         self.schedule.validate()
+        self.probe.validate()
 
     # ---------------- (de)serialisation ----------------
     def to_dict(self) -> dict:
@@ -326,14 +373,16 @@ def _update(obj: Any, d: dict) -> None:
 if __name__ == "__main__":
     c = RunConfig().with_overrides(
         ["loss.lambda_kl=2", "schedule.kl_cap=40", "schedule.enabled=off",
-         "gate.table=[[3,2,20],[1000000000,4,40]]"]).finalize()
+         "gate.table=[[3,2,20],[1000000000,4,40]]", "probe.every=3", "probe.enabled=off"]).finalize()
     assert c.loss.lambda_kl == 2.0 and c.schedule.kl_cap == 40
     assert c.loss.schedule is False and c.gate.mode == "clock"
     assert c.gate.params(2) == (2, 20) and c.gate.params(9) == (4, 40)
+    assert c.probe.every == 3 and c.probe.enabled is False
     c2 = RunConfig.from_dict(json.loads(json.dumps(c.to_dict()))).finalize()
     assert c2.to_dict() == c.to_dict()
     assert RunConfig().finalize().gate.mode == "stable"
-    for bad in (["nope.x=1"], ["loss.nope=1"], ["schedule.rec_frac=2"]):
+    for bad in (["nope.x=1"], ["loss.nope=1"], ["schedule.rec_frac=2"],
+                ["probe.band_lo=20"], ["probe.n_batches=0"], ["probe.target=0"]):
         try:
             RunConfig().with_overrides(bad).finalize()
         except (KeyError, ValueError):
