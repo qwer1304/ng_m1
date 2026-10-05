@@ -2,148 +2,346 @@
 \label{sec:schedule}
 
 \Cref{sec:pseudoinj} fixes the network and the loss of \cref{eq:pseudoinj-loss}. This section fixes
-\emph{when} each loss term is switched on, when the graph is allowed to commit, and how a run is
-monitored and stopped. The reason a schedule is needed at all: the terms conflict early in training
-(the KL term pulls the posterior onto an untrained prior, the sparsity term deletes edges before the
-latents mean anything, the BLAE terms need a decoder that already reconstructs), and the sink check
-is irreversible. Every number below is a starting guess, to be fixed from the first runs; nothing
-here has been run on real TI data or on the real IN-VAE checkpoint.
+\emph{when} each loss term is switched on, when the graph is allowed to commit, how a run is
+monitored and stopped, and which part of the code decides what. The reason a schedule is needed at
+all: the terms conflict early in training (the KL term pulls the posterior onto an untrained prior,
+the sparsity term deletes edges before the latents mean anything, the BLAE terms need a decoder that
+already reconstructs), and the sink check is irreversible. Every number below is a starting guess,
+to be fixed from the first runs. Nothing here has been run on real TI data or on the real IN-VAE
+checkpoint, and the torch-dependent code has not been run at all; only syntax and torch-free logic
+(for example \texttt{config.py}) have been checked.
 
-\subsection{Terms and general decisions}
+\subsection{Code layout and who decides what}
+\label{sec:schedule:layout}
+The code is split so that each file has one job. All tunable numbers live in \texttt{config.py}
+(class \texttt{RunConfig}); no other file hard-codes a default.
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+file & job\\
+\midrule
+\texttt{config.py} & the configuration tree \texttt{RunConfig}: \texttt{loss}, \texttt{gate}, \texttt{schedule}, \texttt{probe}\\
+\texttt{head.py} & trainable head: \texttt{AutoencoderKL} plus the two linear layers\\
+\texttt{m1net.py} & head plus M1 prior, adjacency, sink-freezing and the sink-check gate\\
+\texttt{losses.py} & every loss computation; each loss owns its weight mechanics\\
+\texttt{model.py} & \texttt{M1Model}: network plus losses, and the global cross-loss decisions\\
+\texttt{trainer.py} & loops, optimizers, validation, checkpoints, logging, failure log\\
+\texttt{probe.py} & gradient-scale probe (diagnostic only)\\
+\texttt{main.py} & data, split, geodesic table, assembly, resume\\
+\bottomrule
+\end{tabular}
+\end{center}
+The division of authority is strict.
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Each loss} knows how to compute itself, its target weight and ramp, its own state
+      (started, ramp position, switched off) and whether it is \emph{ready} for others to wait on.
+\item \textbf{The model} makes only the decisions that involve more than one loss (``do not start KL
+      before REC has plateaued'', ``start SPARSE when KL is done''), one method per rule, and says
+      \emph{stop} when a rule requires it. It never computes a loss and never owns a loop.
+\item \textbf{The trainer} owns every loop and every call, and executes ``stop''.
+\end{itemize}
+
+\subsection{General decisions}
 \label{sec:schedule:general}
 \begin{itemize}[leftmargin=1.5em]
-\item A \emph{sink check} is one call to \texttt{find\_sinks\_and\_fix}. The \emph{unresolved block}
-      is the adjacency over the still-unfrozen content nodes. \emph{Binarized} means entries above
-      $0.5$, which is what the forward pass sees.
+\item \textbf{One global switch.} \texttt{schedule.enabled} is the only switch. When it is off, every
+      loss uses its target weight from epoch 1, the sink check runs on the fixed clock of
+      \cref{app:code} (every \texttt{gate.check\_epoch} epochs), there are no caps and no fine-tune
+      phase, and the run stops only at \texttt{max\_epochs}. Two fields are derived from it by
+      \texttt{RunConfig.finalize()} whatever the user wrote: \texttt{loss.schedule} and
+      \texttt{gate.mode} (\texttt{"stable"} or \texttt{"clock"}).
 \item \textbf{Start big.} Begin with $n_c$ of $4$ or $5$ or more, exceeding the budget of
       \cref{sec:reqs} if necessary, and scale down only if runtime or accuracy demands it.
       $D=n_c+n_s$ with $n_s\le2$.
 \item \textbf{Validation} is a held-out slice of the training locations, never a held-out location
-      and never L100. If synthetic images are included, the slice should be split by
-      \texttt{src\_uuid}, so that a source image and its transported copies do not straddle the split
-      (deferred; bursts are handled when the dataset is built).
+      and never L100. It is stratified by the $(y,t,e)$ cell (\texttt{--val\_frac}, default $0.1$; a
+      cell with fewer than two rows goes entirely to training). If synthetic images are included the
+      split is \emph{not} by \texttt{src\_uuid}, so a source image and its transported copies can
+      straddle the split; \texttt{main.py} prints a warning (deferred).
 \item \textbf{Graph signals are logged, never pass/fail}: edge count, number of flips of the
       binarized block, margin of the raw entries to $0.5$, frozen nodes with the epoch of freezing,
-      and degrees.
+      and degrees. Of these, the code currently records the flip history, the freeze log (epoch and
+      node), the final adjacency with parent and child counts, and, at a gate cap, the five raw
+      entries nearest $0.5$.
 \item \textbf{Dimension dependence is not linear.} Candidate edges grow as $m(m-1)/2$, KL and BILIP
-      grow with $D$, while REC is a mean. Only SPARSE is normalized (below); normalizing the rest is
-      deferred until runs at different $n_c$ exist.
-\item \textbf{Cap policy.} A gate whose effect is reversible continues past its cap with a warning.
-      The one irreversible decision, the sink check, stops the run at its cap.
+      grow with $D$, while REC is a mean. Only SPARSE is normalized (divided by the fixed constant
+      $n_c(n_c-1)/2$); normalizing the rest is deferred until runs at different $n_c$ exist.
+\item \textbf{Cap policy.} A rule whose effect is reversible continues past its cap with a warning
+      (BILIP; KL if the head is learning). The decisions that cannot be repaired stop the run: the
+      sink-check cap, and the KL cap when the head is not learning.
+\item \textbf{Timing.} A decision made at the end of epoch $e$ takes effect from epoch $e+1$. Weights
+      are read on every forward pass, so a ramp started at the end of epoch $e$ uses its initial
+      weight in epoch $e+1$ and gains one step at the end of each following epoch.
 \end{itemize}
 
-\subsection{The six scheduled objects}
+\subsection{Weight mechanics shared by all losses}
+\label{sec:schedule:weights}
+With scheduling enabled, the weight of a loss with target $\lambda$, initial fraction $f_0$
+($0$ if none) and ramp length $R$ is
+\[
+w=\begin{cases}
+0 & \text{switched off},\\
+\lambda f_0 & \text{ramp not started},\\
+\lambda\bigl(f_0+(1-f_0)\min(1,p/R)\bigr) & \text{ramp started, } p=\text{epochs since start},
+\end{cases}
+\]
+and $w=\lambda$ if $R\le0$. REC and INJ are created already started. A term whose weight is $0$ at
+the moment is not computed (it is reported as $0$), so the expensive BLAE terms cost nothing while
+inactive. The total is $L=\sum_k w_k\,\ell_k$ over REC, KL, SPARSE, MORAL, INJ, BILIP, each $\ell_k$
+unweighted.
+
+\subsection{The six losses and the gate}
 \label{sec:schedule:objects}
 
-\paragraph{1. Warm-up and KL ramp.}
+\paragraph{1. REC (constant, owns the plateau test).}
+Weight $\lambda_{\mathrm{rec}}=10$ from epoch 1, never ramped or switched off (from the toy setting
+of \cite{ngimpl}). REC is what the others wait for. Its plateau detector fires once the epoch-mean
+REC has changed by less than $1\%$ (relative) between $5$ epochs ago and now; the plateau latches.
+REC also answers whether the head is learning at all: last epoch-mean REC below
+\texttt{rec\_frac}$=0.5$ times the baseline. The baseline is the trivial reconstruction error,
+measured once by \texttt{main.py} on the training rows as the variance of $x$ around its
+per-feature mean, averaged over all entries (the MSE of the best constant predictor).
+
+\paragraph{2. KL.}
 \begin{itemize}[leftmargin=1.5em]
-\item \emph{Stage A.} Train with REC and a small constant INJ ($\lambda_{\mathrm{inj}}=0.1$, a
-      guess), with $\lambda_{\mathrm{kl}}=\texttt{kl\_init\_frac}\cdot\lambda_{\mathrm{kl}}^{\ast}$
-      (a parameter, for example $10^{-3}$). The head must learn to reconstruct before the prior is
-      allowed to pull on it.
-\item \emph{Gate.} REC changes by less than $1\%$ (relative) over the last $5$ epochs.
-\item \emph{KL ramp.} Linear over $10$ epochs, to the target $\lambda_{\mathrm{kl}}^{\ast}=1$, with
-      $\lambda_{\mathrm{rec}}=10$ (both from the toy setting of \cite{ngimpl}).
-\item \emph{Cap.} $30$ epochs. At the cap: if REC is below $50\%$ of the trivial baseline (the data
-      variance), continue with a warning; otherwise stop, since the head is not learning.
+\item \emph{Stage A.} Weight $\texttt{kl\_init\_frac}\cdot\lambda_{\mathrm{kl}}^{\ast}$ from epoch 1
+      ($10^{-3}$, a guess), so the head learns to reconstruct before the prior is allowed to pull on it.
+\item \emph{Start.} The linear ramp (\texttt{kl\_ramp\_epochs}$=10$) to the target
+      $\lambda_{\mathrm{kl}}^{\ast}=1$ starts when REC has plateaued. The estimator is the
+      single-sample $\log q-\log p$ summed over the $D$ latents, since no analytic KL exists when the
+      content prior mean depends on $z$.
+\item \emph{Cap.} \texttt{kl\_cap}$=30$ epochs of waiting. At the cap: if REC is below $50\%$ of the
+      baseline, start KL with a warning; if the baseline is unknown, start with a warning saying
+      so; otherwise stop the run (the head is not learning).
 \end{itemize}
 
-\paragraph{2. SPARSE.}
-Starts when the KL ramp ends, with a $10$-epoch linear ramp to a target of $0.01$ (placeholder).
-The penalty is the sum of \cref{app:code:lossterms} divided by the fixed constant $n_c(n_c-1)/2$.
-The logged value keeps the identity constant of $(I+A)^\top(I+A)$ (it is not subtracted), so the
-logged number is never zero. No cap.
+\paragraph{3. SPARSE.}
+Starts when the KL ramp has reached its target, with a $10$-epoch linear ramp from $0$ to a target
+of $0.01$ (the toy value of \cite{ngimpl}). The penalty is the sum of \cref{app:code:lossterms},
+$\mathrm{sum}\bigl((I+A)^\top(I+A)\bigr)$ on the unresolved block, divided by the fixed constant
+$n_c(n_c-1)/2$. The identity part is not subtracted, so the value is never $0$ while the block is
+non-empty. It is switched off when every content node is frozen.
 
-\paragraph{3. Sink check.}
-The fixed \texttt{check\_epoch} clock of \cref{app:code} is replaced by a stability gate. After each
-epoch, update \texttt{stable\_run}: the number of consecutive epochs in which the binarized
-unresolved block did not change (reset to $0$ on any flip). When $\texttt{stable\_run}\ge W$, freeze
-\emph{all} zero columns of the block at once, then reset the counters. A separate minimum dwell time
-was dropped as redundant with $W$. Let $m$ be the number of unfrozen nodes; starting values:
+\paragraph{4. The sink-check gate.}
+The fixed \texttt{check\_epoch} clock of \cref{app:code} is replaced by a stability gate.
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{Opening.} The gate is held closed until SPARSE has reached \texttt{gate\_open\_frac}$=0.5$
+      of its target weight, and then stays open. Before that the adjacency (initialized to all ones)
+      has no pruning pressure and looks falsely stable. The gate's own counters start from the epoch
+      it opens. This is a quick hack: the right fraction depends on the slope and the weight of
+      SPARSE.
+\item \emph{Stability.} After each epoch, compare the binarized unresolved block (entries above $0.5$,
+      which is what the forward pass sees) with the previous epoch's. \texttt{stable\_run} counts
+      consecutive epochs without change; it is reset on any flip and whenever the set of unfrozen
+      nodes changes.
+\item \emph{Freeze.} Denote $m$ the number of unfrozen nodes. When $\texttt{stable\_run}\ge W(m)$, 
+      freeze \emph{all} zero columns of the block
+      at once (the nodes without remaining children), copy their rows and columns into
+      \texttt{sure\_adj}, mask them in \texttt{sure\_mask}, log the epoch and node, and reset the
+      counters. Starting $m$-dependent values:
 \begin{center}
 \begin{tabular}{@{}ccc@{}}
 \toprule
 $m$ (unfrozen) & $W$ & $\mathrm{cap}(m)$\\
 \midrule
-2--3 & 3 & 30\\
+1--3 & 3 & 30\\
 4--5 & 5 & 50\\
 6 or more & 8 & 80\\
 \bottomrule
 \end{tabular}
 \end{center}
-The cap counts epochs since the last reset. At the cap the run does \emph{not} freeze anything: it
-logs the flip history, the raw entries nearest $0.5$ and the nodes frozen so far, and stops. No
-intervention (for example a hysteresis margin in the binarization) is added at first; whether one is
-needed is decided from the first runs. Because the strictly lower-triangular design forces the
-last-index node to have no children, it is always frozen at the first successful check.
-
-\paragraph{4. MORAL.}
-Target $0$ for the first runs. Later, ramp it in after the first sink check. The reference state
-\texttt{prev\_adj} and \texttt{k\_min} of \texttt{model.py} are plain attributes, not buffers, and
-must be saved explicitly. Frozen entries are constants and cancel in the difference, so the term
-measures the drift of the unresolved block only, but it weights low-index unfrozen nodes more than
-the original definition does. Reweighting this to $f$ copies of the unresolved-block drift, and
-dividing by $f$, is deferred.
-
-\paragraph{5. BILIP.}
-Same REC plateau gate as for the KL ramp. Cap: $60$ epochs, then start anyway with a warning.
-Linear ramp over $20$ epochs to a placeholder target of $10^{-4}$. The magnitude of BILIP is logged
-once at the gate, so the target can be set against it. Deferred: a mean-over-entries normalization,
-a continuous logging-only mode, and the subset fraction ($0.3$ in the code, whose docstring
-attributes this to BLAE, against $10\%$ in the BLAE text; unresolved).
-
-\paragraph{6. Run-level control.}
-\begin{itemize}[leftmargin=1.5em]
-\item \texttt{max\_epochs} $=250$. The worst-case budget at $n_c=5$ is about $190$ epochs.
-\item When all content nodes are frozen, continue for \texttt{finetune\_epochs} (a guess of $20$)
-      with the graph fixed and SPARSE and MORAL off, then stop.
-\item \emph{Final report:} whether all nodes froze, the freeze order and epochs, the caps hit, the
-      final graph with degrees, and validation accuracy.
-\item A run is marked \emph{suspect} if any cap was hit or the graph did not finish.
+\item \emph{Cap.} The cap counts epochs since the last reset. At the cap the run does \emph{not}
+      freeze anything: it records the flip history, the raw entries nearest $0.5$ and the nodes
+      frozen so far, and stops. No intervention (for example a hysteresis margin in the
+      binarization) is added at first.
+\item The strictly lower-triangular design forces the last-index node to have no children, so it is
+      always frozen at the first successful check.
+\item \emph{Deviation from the reference code.} \texttt{find\_sinknodes\_and\_fix} of \cref{app:code}
+      indexes the global mask with indices taken from the compacted remaining block, which is
+      correct only in the first round. Here compact indices are mapped back to global node ids, and
+      the quirk that resets \texttt{should\_stop} when the adjacency sums to zero is dropped. The
+      heuristic itself is unchanged and is still a mask heuristic, not the derivative test of the
+      theory.
+\item \emph{Clock mode} (scheduling off): freeze all zero columns every \texttt{check\_epoch} epochs,
+      with no stability rule and no cap.
 \end{itemize}
 
-\subsection{Gradient-scale logging}
+\paragraph{5. MORAL.}
+Target $0$ for the first runs, in which case it is never computed. Once a target is set, its ramp
+(10 epochs, a placeholder) starts at the first successful sink check. After every check that froze
+$f$ nodes the model snapshots the binary adjacency as the reference $A^{t-1}$ and sets
+$k_{\min}=n_c-f+1$; the loss sums the squared Frobenius distances of
+$(I+A_{[:k,:k]})^\top(I+A_{[:k,:k]})$ to the same quantity of the reference for
+$k=k_{\min},\dots,n_c$. Before the first snapshot it is $0$. Frozen entries are constants and
+cancel in the difference, so the term measures the drift of the unresolved block only, but it
+weights low-index unfrozen nodes more than the original definition does (reweighting is deferred).
+The reference \texttt{prev\_adj} and \texttt{k\_min} are plain attributes, not buffers, and are
+saved explicitly in the schedule state. MORAL is switched off when all nodes are frozen.
+
+\paragraph{6. INJ.}
+The BLAE injective loss, computed on $\hat\mu$ and never on a sampled $\hat z$. Constant weight
+$0.1$ from epoch 1 (a guess, no published anchor), threshold $0.3$, never switched off. It needs a
+$(b,b)$ sub-table of the geodesic table for the minibatch, so the trainer supplies one whenever the
+weight is positive.
+
+\paragraph{7. BILIP.}
+The BLAE decoder-Jacobian term, computed on $\hat\mu$, by far the most expensive loss (about $D$
+decoder passes per sample on a random fraction of the batch, with the plain attention backend
+forced because the fused kernels have no forward-mode rule). It starts when REC has plateaued, with
+a cap \texttt{bilip\_cap}$=60$ epochs, after which it starts anyway with a warning. Linear ramp over
+$20$ epochs to a placeholder target of $10^{-4}$. Its first computed value (one epoch after the ramp
+starts, the first epoch with positive weight) is kept, so the target can be set against the real
+magnitude. Upper bound $L=2$. The subset fraction is $0.3$ in the code against $10\%$ in the BLAE
+text (unresolved).
+
+\subsection{The end-of-epoch sequence}
+\label{sec:schedule:sequence}
+The trainer calls \texttt{model.end\_epoch(epoch, stats)} once per epoch, after the train and
+validation passes. \texttt{stats} holds the epoch means of the unweighted terms. The fixed order is:
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+\item every loss advances its ramp and observes \texttt{stats};
+\item the gate acts (subject to the opening rule above); if it froze nodes, MORAL takes its snapshot;
+      a gate cap becomes a stop request;
+\item only if scheduling is enabled, the rules, in this order: KL starts (REC plateau, cap 30);
+      BILIP starts (REC plateau, cap 60); SPARSE starts (KL ramp done); MORAL starts (first sink
+      check); SPARSE and MORAL switch off (all nodes frozen);
+\item run control decides whether to stop;
+\item a \texttt{Status} is returned: stop flag and reason, suspect flag, this epoch's decisions and
+      warnings, and the weights for the next epoch.
+\end{enumerate}
+Every decision and warning is appended to a log with its epoch, kept in the schedule state, so a
+finished run shows why each loss started or stopped when it did.
+
+\subsection{Run control, suspect runs and outcomes}
+\label{sec:schedule:control}
+\begin{itemize}[leftmargin=1.5em]
+\item \texttt{max\_epochs}$=250$ is a hard stop. The earlier estimate of a worst-case budget of about
+      $190$ epochs at $n_c=5$ belonged to the previous design and has not been recomputed.
+\item When all content nodes are frozen, continue for \texttt{finetune\_epochs} (a guess of $20$)
+      with the graph fixed and SPARSE and MORAL off, then stop with ``finished''.
+\item Stop priority: a stop request (KL cap with the head not learning, or sink-check cap), then the
+      end of the fine-tune phase (scheduling enabled only), then \texttt{max\_epochs}.
+\item A run is \emph{suspect} if any cap was hit, or (scheduling enabled) it stopped before all
+      nodes froze. The first epoch at which this becomes true is logged as \texttt{SUSPECT}; the
+      run continues but must not be trusted.
+\item \textbf{Outcomes} written to \texttt{report.json}: \texttt{finished}, \texttt{finished\_suspect},
+      \texttt{max\_epochs} (scheduling disabled), and \texttt{failure:<kind>} with kind
+      \texttt{nonfinite\_loss}, \texttt{model\_stop}, or \texttt{max\_epochs\_unfinished}
+      (scheduling enabled only). On a failure the trainer also writes \texttt{failure.json} with the
+      reason, epoch, caps hit, freeze log, gate diagnostics, last stats, current weights, the
+      decision and warning logs and the model report. \texttt{main.py} exits with status $1$ on a
+      failure outcome.
+\end{itemize}
+
+\subsection{Gradient-scale probe}
 \label{sec:schedule:gradlog}
 The weights are tuned with the Adam-based heuristic
 \begin{equation}
 \mathrm{scaler}=\frac{0.01}{\mathrm{LR}\times\lVert\nabla\rVert},
 \label{eq:scaler}
 \end{equation}
-tuning each weight until its scaler is about $1$. Whether $\lVert\nabla\rVert$ is meant to include
-the weight is not settled, so both versions are printed.
+tuning each weight until its scaler is about $1$. The probe (\texttt{probe.py}) is diagnostic only:
+it never changes a weight, never stops a run and never touches an optimizer.
 \begin{itemize}[leftmargin=1.5em]
+\item \textbf{Norm.} For a term $k$ with unweighted value $\ell_k$ and declared parameter set $P_k$,
+      \[
+      \mathrm{norm}_k=\Bigl(\sum_{p\in P_k}\mathrm{lr}_p^2\,\bigl\lVert\partial\ell_k/\partial p\bigr\rVert^2\Bigr)^{1/2},
+      \]
+      with $\mathrm{lr}_p$ the learning rate of the optimizer group that owns $p$. The weighted norm is
+      $w_k\,\mathrm{norm}_k$, linear in the weight, so $\mathrm{scaler}_k(w)=0.01/(w\,\mathrm{norm}_k)$
+      and the suggested weight is $w^{\ast}_k=0.01/\mathrm{norm}_k$. This settles the earlier open
+      question: the norm is taken of the \emph{unweighted} gradient, and the weight enters
+      separately.
 \item \textbf{Computed at the target weight.} A ramping term is smaller by design, so the scaler is
-      reported at the final weight, with the ramp fraction shown next to it.
-\item \textbf{Per term:} ramp fraction, unweighted gradient norm, scaler at the target weight, and
-      its trend. The band is loose (about $0.1$ to $10$), with different flags for ``too weak'' and
-      ``too strong''.
-\item \textbf{Flags only, no automatic stop}, including for blow-ups; the run is killed by hand.
-\item \textbf{Computation.} Gradients are computed continuously without updating parameters, one
-      backward pass per term, including terms whose weight is currently $0$. BILIP is probed less
-      often because of its cost.
-\item \textbf{Adjacency.} Its optimizer is SGD with momentum (\texttt{trainer.py}), where the step is
-      really LR times the gradient, whereas \cref{eq:scaler} was calibrated with Adam. The adjacency
-      row is therefore unvalidated.
+      reported at the target weight, with the ramp fraction shown next to it.
+\item \textbf{Flags only.} ``strong'' if the scaler is below $0.1$, ``weak'' if above $10$ (a loose
+      band), plus ``no\_gradient'' and ``target\_zero''. A flag is logged as \texttt{PROBE-FLAG}; there
+      is no automatic stop, including for blow-ups.
+\item \textbf{Declared parameter sets} (\texttt{PROBE\_SETS}, proposal, to be confirmed):
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+term & parameters\\
+\midrule
+REC & whole head (encoder side and decoder side)\\
+KL & encoder side, prior, adjacency\\
+SPARSE, MORAL & adjacency\\
+INJ & encoder side\\
+BILIP & decoder side and encoder side\\
+\bottomrule
+\end{tabular}
+\end{center}
+      Encoder side means the \texttt{AutoencoderKL} encoder, \texttt{quant\_conv} and
+      \texttt{pre\_linear}; decoder side means its decoder, \texttt{post\_quant\_conv} and
+      \texttt{post\_linear}. A parameter that fits no group raises an error, so a renamed module is
+      caught rather than silently dropped.
+\item \textbf{Computation.} Every \texttt{probe.every}$=5$ epochs (BILIP only every
+      \texttt{probe.bilip\_every}$=25$), after \texttt{end\_epoch} and before the checkpoint, on
+      \texttt{probe.n\_batches} training batches. One forward pass per batch, then
+      \texttt{torch.autograd.grad} per term with \texttt{retain\_graph=True}, which does not write
+      \texttt{.grad}, so a training step cannot be disturbed. Terms with weight $0$ are included.
+      The RNG state, the train/eval mode and BILIP's recorded first value are restored afterwards.
+      A probe that raises is logged as a warning and training continues.
+\item \textbf{Skipped terms}: SPARSE with no unresolved block, MORAL before the first sink check,
+      INJ without a geodesic table, BILIP when not due.
+\item \textbf{Adjacency.} Its optimizer is SGD with momentum, where the step is really LR times the
+      gradient, whereas \cref{eq:scaler} was calibrated with Adam. The SPARSE and MORAL rows are
+      therefore marked unvalidated.
 \end{itemize}
+Output: a table on stdout, one JSON line per probe in \texttt{gradscale.jsonl}, and the flag lines
+in \texttt{events.log}.
 
-\subsection{What this requires of the Trainer}
+\subsection{What the trainer does}
 \label{sec:schedule:trainer}
 \begin{itemize}[leftmargin=1.5em]
-\item The sink-check gate replaces the fixed \texttt{check\_epoch} clock, and a validation pass on the
-      held-out slice is added.
-\item The gradient-scale logging of \cref{sec:schedule:gradlog}.
-\item \textbf{Checkpoint only at epoch boundaries,} saving the non-learnable state: \texttt{stable\_run},
-      the epochs since the last reset, the previous epoch's binarized block, \texttt{prev\_adj},
-      \texttt{k\_min}, the REC window, the stage and ramp start epochs, all optimizer states
-      (including the SGD momentum), the RNG states, and the logs. \texttt{sure\_mask} and
-      \texttt{sure\_adj} are buffers and are saved with the model.
+\item \textbf{Two optimizers, disjoint.} Adam on all non-adjacency parameters
+      (\texttt{lr}$=10^{-3}$), SGD with momentum $0.9$ on the adjacency (\texttt{adj\_lr}$=10^{-3}$).
+      This fixes the overlap of \cref{app:code}, where the adjacency was stepped by both. Learning
+      rates are constant; LR scheduling is parked, and the adjacency LR in particular should stay
+      constant.
+\item \textbf{One epoch.} Train pass (one optimizer step per batch, epoch means of every unweighted
+      term), validation pass, \texttt{model.end\_epoch}, logging of decisions and warnings, probe,
+      checkpoint, stop if requested.
+\item \textbf{Validation.} \texttt{val\_rec} and \texttt{val\_kl} with $z$ sampled as in training,
+      and, optionally, macro species accuracy: species predicted from the content latents only,
+      with the time of day observed, as $\arg\max_y\log p(\hat\mu_c\mid y,t,e)$ under the current
+      prior with a uniform label prior, $z=\hat\mu$. The accuracy costs one prior pass per species
+      per batch and is switched off by \texttt{--no\_val\_acc}. It is an addition to the plan, kept
+      pending confirmation.
+\item \textbf{Non-finite loss.} A NaN or infinite term raises before \texttt{backward}, so no
+      optimizer step happens, the run stops with outcome \texttt{failure:nonfinite\_loss}, and the
+      last good checkpoint is not overwritten.
+\item \textbf{Checkpoint, at epoch boundaries only}, written atomically as \texttt{last.pt}: model
+      state (including the buffers \texttt{sure\_mask} and \texttt{sure\_adj}), the schedule state
+      (\texttt{stable\_run}, epochs since the last reset, the previous epoch's binarized block,
+      \texttt{prev\_adj}, \texttt{k\_min}, the REC window, stage and ramp positions, run control, the
+      decision logs), both optimizer states including the SGD momentum, all RNG states, the history,
+      the finalized \texttt{RunConfig}, the trainer configuration and the input arguments.
+      \texttt{--resume} restores everything and continues from the next epoch, using the saved
+      arguments and \texttt{RunConfig}; only \texttt{--device} and new \texttt{--set} overrides come
+      from the command line.
+\item \textbf{Geodesic table.} Built once, only if the injective loss is active, on all rows of the
+      selected training locations (train and validation rows together, so the validation rows act
+      as extra geometry for the regularizer targets).
 \end{itemize}
 
 \subsection{Open items}
 \label{sec:schedule:open}
 \begin{itemize}[leftmargin=1.5em]
-\item A margin in the binarization, and any intervention at the sink-check cap.
-\item Normalization of KL, MORAL and BILIP across $n_c$; MORAL reweighting.
-\item Splitting validation by \texttt{src\_uuid} when synthetic images are included.
+\item \textbf{To confirm:} \texttt{PROBE\_SETS}; keeping the validation accuracy; the per-feature
+      versus the global variance for the REC baseline; building the geodesic table on training rows
+      only (which would need the ids remapped).
+\item \textbf{Not started:} LR scheduling (none or cosine, applied by the trainer, adjacency LR
+      constant by default). \texttt{TrainerConfig} still lives in \texttt{trainer.py} with its own
+      defaults, against the rule that defaults live only in \texttt{config.py}, and has to move.
+\item \textbf{Gate:} a margin in the binarization and any intervention at the sink-check cap;
+      \texttt{gate\_open\_frac} may be wrong for slow ramps or small weights.
+\item \textbf{Deferred:} normalization of KL, MORAL and BILIP across $n_c$; MORAL reweighting;
+      validation split by \texttt{src\_uuid} when synthetic images are included; the BILIP subset
+      fraction.
+\item \textbf{Untested:} the torch-dependent code, in this order: the smoke test
+      (\texttt{python main.py --synthetic --set schedule.max\_epochs=4 --set loss.lambda\_inj=0}),
+      the gate's tensor code, the loss computations, \texttt{M1Model.\_\_init\_\_}, and one probe
+      (\texttt{--set probe.every=1}).
 \item Every starting value above is a guess; all are to be fixed from the first runs.
 \end{itemize}

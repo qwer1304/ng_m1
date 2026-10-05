@@ -14,6 +14,10 @@ then a first, wrong version of the
 training objective and why it had to be corrected (\cref{sec:pseudoinj:jacobian}), then the corrected
 architecture (\cref{sec:pseudoinj:arch}), and finally an explicit list of gotchas
 (\cref{sec:pseudoinj:gotchas}) that a reader implementing this should not discover the hard way.
+The code that implements this section is \texttt{invae.py} and \texttt{extract\_features.py} (frozen
+backbone), \texttt{head.py} (trainable head), \texttt{losses.py} (all loss terms) and
+\texttt{geodesic.py} (the geodesic table); none of it has been run yet on real TI data
+(\cref{sec:schedule}).
 
 \subsection{The problem this section answers}
 \label{sec:pseudoinj:problem}
@@ -72,11 +76,27 @@ of them is used or discussed further in this note.
 \textbf{Why IN-VAE (the REPA-E-style baseline) \cite{leng2025repae} is the default here.} It is trained on plain reconstruction
 (plus generic perceptual/adversarial terms), with no alignment or semantic-shaping loss pulling it toward
 discarding style/location information; its embedding width ($8192$, i.e.\ $32\times16\times16$) is
-comparable to the other non-flagged candidates; and, as an encoder-decoder pair with a released,
-well-tested implementation (Hugging Face \texttt{diffusers.AutoencoderKL} \cite{aekl}), it needs no 
-bespoke pipeline code, only a frozen forward pass -- the same iteration-speed argument \cref{sec:archB} 
-already makes for a frozen backbone. Everything from here on assumes this choice; it should still pass 
-\cref{app:probe}'s screen before being trusted, the same as any candidate.
+comparable to the other non-flagged candidates; and it needs no bespoke training code, only a frozen
+forward pass -- the same iteration-speed argument \cref{sec:archB} already makes for a frozen backbone.
+Everything from here on assumes this choice; it should still pass \cref{app:probe}'s screen before being
+trusted, the same as any candidate.
+
+\textbf{How the frozen encoder is run} (\texttt{invae.py}, \texttt{extract\_features.py}). The released
+IN-VAE is REPA-E's own \texttt{AutoencoderKL} class (a port of the CompVis latent-diffusion VAE, loaded
+from a clone of their repository with a strict state-dict load), \emph{not} the Hugging Face
+\texttt{diffusers.AutoencoderKL} that the trainable head uses (\cref{sec:pseudoinj:arch}). The facts that
+matter for the pipeline:
+\begin{itemize}[leftmargin=1.5em]
+\item the cached $\tilde x$ is the posterior \emph{mean} of the encoder (deterministic, no sampling, no
+      gradient);
+\item input range is $[-1,1]$, with no ImageNet mean/std normalization;
+\item it is trained at $256\times256$, giving a $(32,16,16)$ latent, so images must be $256\times256$
+      (the tools do not resize);
+\item it uses GroupNorm only: there is no BatchNorm and nothing to recalibrate to TI, so stage~1 of
+      \nameref{sec:archB} does not exist here;
+\item the brightness scalar of \cref{sec:use} is computed from the input image before any
+      normalization, as in \nameref{sec:archB}.
+\end{itemize}
 
 \subsection{BLAE: an injective/bi-Lipschitz regularizer for the trainable head}
 \label{sec:pseudoinj:blae}
@@ -91,16 +111,28 @@ $(\E_\theta,\D_\phi)$:
 representation.
 \end{itemize}
 
-They propose two losses to add to an otherwise ordinary autoencoder, meant to push its encoder 
-toward being injective without requiring an exactly invertible architecture:
+They propose two separate losses to add to an otherwise ordinary autoencoder, meant to push it
+toward being injective without requiring an exactly invertible architecture. In this note they are the
+terms INJ and BILIP, implemented in \texttt{losses.py} after the released BLAE code, and they act on
+different objects.
 \begin{itemize}[leftmargin=1.5em]
-\item an \emph{injective} (separation) loss, which penalizes distinct inputs landing too close 
-      together in latent space (their Theorem~1 gives a separation criterion);
-\item a \emph{bi-Lipschitz} relaxation term, which additionally penalizes local distortion of
-      \emph{geodesic} distances between the ambient data (estimated once via an Isomap-style 
-      shortest-path computation) and Euclidean distances between the corresponding latents; the 
-      paper argues (their Theorems~3-4) this relaxation is admissible at $O(n)$ latent dimensions, 
-      where a hard embedding guarantee would need $O(k^2)$.
+\item The \emph{injective} loss (INJ) acts on the \emph{encoder side}. For pairs of inputs in a
+      minibatch whose geodesic distance is above $5\%$ of the batch maximum (and whose latent distance
+      is nonzero) it looks at the ratio $r=\lVert z_i-z_j\rVert/d_{\mathrm{geo}}(x_i,x_j)$ and penalizes
+      $\mathrm{relu}(\log 0.3-\log r)+5\,\mathrm{relu}(r-1)$, averaged over pairs. That is, it keeps
+      latent distances between $0.3$ and $1$ times the geodesic distances of the inputs: distinct
+      inputs cannot collapse to one latent (lower bound), nor be stretched apart (upper bound). The
+      geodesic distances are estimated once by an Isomap-style shortest-path computation
+      (\cref{sec:pseudoinj:gotchas}). The paper's Theorem~1 gives a separation criterion; the loss
+      implemented is the released \texttt{InjectiveLoss}.
+\item The \emph{bi-Lipschitz} term (BILIP) acts on the \emph{decoder side} and uses no geodesic table.
+      With $J=\partial\,\mathrm{decode}/\partial z$ and $G=J^\top J$ (the $D\times D$ pulled-back
+      metric), it penalizes the off-diagonal entries of $G$ (latent directions should stay orthogonal
+      in feature space) and the diagonal entries above an upper bound $L=2$ (squared hinge). There is
+      no lower-bound term (BLAE uses $0$). The Jacobian is computed by forward-mode differentiation on
+      a random fraction ($0.3$) of the batch. The paper argues (its Theorems~3-4) that this relaxation
+      is admissible at $O(n)$ latent dimensions, where a hard embedding guarantee would need
+      $O(k^2)$.
 \footnote{According to the Nash embedding theorem \cite{nash1956}, a $k$-dimensional compact 
 Riemannian manifold requires a latent dimension of $O(k^2)$ to guarantee an isometric embedding
 (distance preserving); the required latent dimension $n$ satisfies 
@@ -112,10 +144,10 @@ scale: the paper's own experiments are Swiss Roll, dSprites, MNIST, CIFAR-10, Bi
 \textbf{What is reusable from the released repository, and what is not.} The repository's dataset-
 specific autoencoder classes are toy-sized and toyishly-implemented (latent dims $2$--$16$, small 
 fixed image sizes) and not directly usable.
-What \emph{is} architecture-agnostic and directly reusable: the injective loss and the bi-Lipschitz 
-term themselves (they take only a latent batch and a precomputed geodesic-distance table, nothing
-dataset-specific), and the geodesic-distance-table computation (\cref{sec:pseudoinj:gotchas} 
-discusses its cost at TI scale). \textbf{No VAE variant is released}: a stochastic BL-VAE is 
+What \emph{is} architecture-agnostic and reusable: the injective loss (it takes a latent batch and a
+geodesic sub-table, nothing dataset-specific), the bi-Lipschitz term (it takes a decode function and a
+latent batch), and the idea of the geodesic-distance table, whose computation is replaced here by a
+bounded-cost version (\cref{sec:pseudoinj:gotchas}). \textbf{No VAE variant is released}: a stochastic BL-VAE is 
 described only in the paper's Appendix~C.6.2, demoed on Swiss Roll, and never shipped in the code 
 (a repository search for VAE/reparameterization/log-variance/KL code returns nothing in Python 
 files; there's a Jupyter notebook with some VAE-denoted variables, but their examination shows that 
@@ -132,9 +164,9 @@ replaces it.
 
 \textbf{What is and is not the obstacle.}
 \begin{itemize}[leftmargin=1.5em]
-\item \emph{Computing $J$ is not the obstacle.} The trainable decoder maps a latent of dimension $10$ to
-      the image-side tensor, so its Jacobian has only $10$ columns and $J^\top J$ is a $10\times10$
-      matrix. Forward-mode differentiation gives $J$ with about $10$ passes per sample. This is exactly
+\item \emph{Computing $J$ is not the obstacle.} The trainable decoder maps a latent of dimension $D\approx10$ to
+      the image-side tensor, so its Jacobian has only $D$ columns and $J^\top J$ is a $D\times D$
+      matrix. Forward-mode differentiation gives $J$ with about $D$ passes per sample. This is exactly
       what the bi-Lipschitz term of \cref{sec:pseudoinj:blae} already does when it evaluates the decoder
       Jacobian. That term is a regularizer, however, and only needs approximate singular values. A
       likelihood needs the exact $\log\det$ and its gradient at every step.
@@ -142,14 +174,15 @@ replaces it.
       differentiating through forward-mode Jacobians of a convolutional decoder with attention, at every
       training step and for every sample. The attention blocks must also be run with the unfused (math)
       backend, because the fused kernels have no forward-mode rule. This is affordable for a
-      regularizer weighted by a small coefficient, but it is a heavy price for the main objective.
+      regularizer weighted by a small coefficient and applied to a fraction of the batch, but it is a
+      heavy price for the main objective.
 \item \emph{The Gram determinant does not factorize over stages.} For square maps, $\log|\det|$ of a
       composition is the sum of the per-stage terms, which is what made the flow section tractable
       (\cref{eq:flow-jac-split}). For non-square maps it is not. The volume term of the composite
       ``frozen IN-VAE decoder after head decoder'' is not the sum of a backbone term and a head term, so
       the frozen backbone cannot be handled separately.
 \item \emph{The main obstacle: the density is degenerate.} A deterministic decoder from a
-      $10$-dimensional latent has an image that is a $10$-dimensional manifold inside a much
+      $D$-dimensional latent has an image that is a $D$-dimensional manifold inside a much
       larger space. The pushforward of $p_{\hat Z}$ is then supported on that manifold and has no density
       with respect to Lebesgue measure on the large space. The change-of-variables formula yields a
       density only with respect to the surface measure of the manifold, and it is meaningful only for
@@ -179,64 +212,74 @@ approximate, weighted use is sufficient.
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
 \item \textbf{Frozen backbone.} IN-VAE's pretrained encoder (\cref{sec:pseudoinj:invae}), run once 
        per image, cached, exactly as \nameref{sec:archB} caches $\tilde x=\mathrm{BB}(x)$ -- except 
-       here $\tilde x$ is the spatial IN-VAE latent, a $32\times16\times16$ tensor, not a pooled 
+       here $\tilde x$ is the spatial IN-VAE latent mean, a $32\times16\times16$ tensor, not a pooled 
        ResNet vector.
 %-----------------
-\item \textbf{Trainable head.} A \emph{fresh, untrained} instance of Hugging Face's
+\item \textbf{Trainable head} (\texttt{head.py}). A \emph{fresh, untrained} instance of Hugging Face's
       \texttt{diffusers.AutoencoderKL} \cite{aekl} (not a pretrained checkpoint), 
       used \emph{unmodified} -- rather 
       than editing its \texttt{quant\_conv} and \texttt{post\_quant\_conv} internals, two small 
-      trainable wrapper blocks sit outside it and convert between its native spatial latent and M1's 
-      flat vector.
+      trainable linear layers sit outside it and convert between its native spatial latent 
+      and M1's flat vector.
 
       \textbf{Sizing the stock module.} \texttt{AutoencoderKL} \cite{aekl} is configured, but not 
       altered internally, to fit the $32\times16\times16$ IN-VAE input:
       \begin{itemize}[leftmargin=1.3em]
       \item In diffusers the last encoder stage does not downsample, so \texttt{N} stages give 
-            \texttt{N-1} halvings.
-            
-            \texttt{down\_block\_types = ("DownEncoderBlock2D", "DownEncoderBlock2D",}\\ 
-            \texttt{"DownEncoderBlock2D")} (3 stages,
-            $16\to8\to4$), with the symmetric \texttt{up\_block\_types} triple;
-      \item \texttt{block\_out\_channels = (32, 64, 128)};
+            \texttt{N-1} halvings. Three stages are used,
+            \texttt{down\_block\_types = ("DownEncoderBlock2D",} \texttt{"DownEncoderBlock2D",}
+            \texttt{"DownEncoderBlock2D")}
+            ($16\to8\to4$), with the symmetric \texttt{up\_block\_types} triple;
+      \item \texttt{block\_out\_channels = (32, 64, 128)}, each divisible by the GroupNorm group
+            count ($32$);
       \item \texttt{layers\_per\_block = 1};
       \item \texttt{in\_channels = out\_channels = 32};
-      \item \texttt{latent\_channels} left at whatever stock value keeps \texttt{quant\_conv}/
-            \texttt{post\_quant\_conv} well-defined (e.g.\ $4$); this is \emph{not} M1's $\sim\!10$-
-            dim latent -- that reduction happens entirely in the wrapper blocks below, outside the 
-            module.
+      \item \texttt{latent\_channels = 4} (the stock default, a hyperparameter); this is \emph{not}
+            M1's $\sim\!10$-dim latent -- that reduction happens entirely in the linear layers below,
+            outside the module.
       \end{itemize}
-      With this config, stock \texttt{AutoencoderKL.encode} returns its own spatial latent 
-      distribution at $4\times4\times4$ (i.e.\ \texttt{latent\_channels}$=4$, spatial size 
-      $4\times4$), unchanged from the library's normal behavior.
+      With this config the module's own bottleneck is $4\times4\times4=64$ scalars. The code does not
+      assume this: it measures the bottleneck shape by a dry run at construction and exposes it, so
+      the number should always be read from the built module and not computed by hand.
 
-      \textbf{Pre-block (after \texttt{AutoencoderKL.encode}, before M1).} Flatten (or global-average-
-      pool) the module's own $4\times4\times4$ output, then a single linear layer maps this flat vector 
-      to M1's $20$ scalars $(\hat\mu,\hat{\log\sigma^2})$ (i.e.\ $10$ content/style latents). This 
-      linear layer is the actual dimensionality-reducing step; \texttt{AutoencoderKL} itself is never 
-      told about, and never computes, the $10$-dim target.
+      \textbf{Which vector leaves the module.} The module encodes to its own Gaussian
+      (mean and log-variance). M1 needs exactly one posterior, $q(\hat Z\mid x)$ over the $D$ M1
+      latents, so by default only the module's \emph{mean} is used and its internal variance is
+      ignored; all noise comes from the reparameterization of the M1 posterior. (Sampling the internal
+      Gaussian too would inject a second, unmodelled noise source between $x$ and $\hat z$; it is
+      available as an option, \texttt{internal\_latent="sample"}, and is not recommended.) The
+      module's internal KL loss is never computed.
 
-      \textbf{Post-block (after M1's prior/loss, before \texttt{AutoencoderKL.decode}).} A single linear
-      layer expands the sampled $10$-dim $\hat z$ back to a flat $4\times4\times4$ vector, reshaped to
+      \textbf{Pre-linear layer (after \texttt{AutoencoderKL.encode}, before M1).} The module's
+      $4\times4\times4$ mean is flattened ($64$ scalars) and a single linear layer maps it to
+      $2D$ scalars, the first $D$ being $\hat\mu$ and the last $D$ being $\hat{\log\sigma^2}$ (clamped to
+      $[-10,10]$ for numerical safety), where $D=n_c+n_s$. This linear layer is the actual
+      dimensionality-reducing step; \texttt{AutoencoderKL} itself is never told about, and never
+      computes, the $D$-dim target.
+
+      \textbf{Post-linear layer (after M1's prior/loss, before \texttt{AutoencoderKL.decode}).} A single
+      linear layer expands the sampled $D$-dim $\hat z$ back to a flat $64$-vector, reshaped to
       $4\times4\times4$ and passed into stock \texttt{AutoencoderKL.decode} unmodified.
 
       \textbf{Why this is preferred over editing the module.} The pre/post linear layers are the only
-      hand-written, unvalidated pieces; \texttt{AutoencoderKL}'s own encode/decode path, KL
-      reparameterization, and internal conv blocks stay exactly as tested and released, with no risk of 
+      hand-written, unvalidated pieces; \texttt{AutoencoderKL}'s own encode/decode path and internal
+      conv blocks stay exactly as tested and released, with no risk of 
       a silent behavioral change from touching \texttt{quant\_conv}/\texttt{post\_quant\_conv} directly. 
-      The cost is one extra pair of thin layers and one more bottleneck seam (module output $\to$ M1 
+      The cost is one extra pair of thin layers and one more bottleneck seam (module output $\to$ M1
       vector) to account for when tracing where distortion enters the pipeline 
-      (\cref{sec:pseudoinj:gotchas}).
+      (\cref{sec:pseudoinj:gotchas}). Because the module's internal variance branch is computed but
+      unused in the default mode, its parameters receive no gradient.
 %-----------------
-\item \textbf{M1 prior, unchanged.} The content/style ANM prior of \cref{sec:use} -- \texttt{mean\_net},
-      \texttt{log\_var\_net}, the adjacency \texttt{adj\_mat}, sink-freezing -- sits on top of the head's
-      output exactly as in \cref{app:code}; nothing about the prior side changes here, only the recognition
-      network $q(\hat Z\mid X)$ feeding it.
-\item \textbf{BLAE losses, added to the head's training, computed on $\hat\mu$.} The injective (separation)
-      loss and the bi-Lipschitz term of \cref{sec:pseudoinj:blae} are added to the head's loss, evaluated
-      on the posterior mean $\hat\mu$ (never on a noisy sample $\hat z=\hat\mu+\epsilon$, since the
-      geodesic-preservation objective is inherently a statement about a deterministic map -- the
-      reparameterization noise must not enter this term). The geodesic-distance table (\texttt{GeoD}) is
+\item \textbf{M1 prior, unchanged in structure.} The content/style ANM prior of \cref{sec:use} -- the
+      content mechanism, the noise-scale networks, the adjacency \texttt{adj\_mat}, sink-freezing --
+      sits on top of the head's output as in \cref{app:code}, with the domain conditioning split by block
+      as planned there (\texttt{m1net.py}); only the recognition
+      network $q(\hat Z\mid X)$ feeding it is the new head.
+\item \textbf{BLAE losses, added to the head's training, computed on $\hat\mu$.} The injective loss
+      is evaluated on the posterior mean $\hat\mu$ and the bi-Lipschitz term on the decoder Jacobian
+      evaluated at $\hat\mu$ (never at a noisy sample $\hat z=\hat\mu+\epsilon$, since both are
+      statements about a deterministic map -- the reparameterization noise must not enter these
+      terms). The geodesic-distance table (\texttt{GeoD}), needed only by the injective loss, is
       built once from the cached IN-VAE embeddings of the training-location images.
 \end{enumerate}
 The resulting per-image loss, replacing \texttt{Trainer.step} of \cref{app:code} on the head side:
@@ -244,8 +287,8 @@ The resulting per-image loss, replacing \texttt{Trainer.step} of \cref{app:code}
 \begin{aligned}
 \mathcal L(x,u) &= \lambda_{\mathrm{kl}}\,\mathrm{KL}\bigl(q(\hat Z\mid x)\,\|\,p_{\hat Z}(\hat Z\mid u)\bigr) \\
 &+ \lambda_{\mathrm{rec}}\,\mathrm{recon}(\tilde x,\hat{\tilde x}) \\
-&+ \lambda_{\mathrm{inj}}\,\ell_{\mathrm{inj}}(\hat\mu) \\
-&+ \lambda_{\mathrm{biLip}}\,\ell_{\mathrm{biLip}}(\hat\mu,\mathtt{GeoD}) \\
+&+ \lambda_{\mathrm{inj}}\,\ell_{\mathrm{inj}}(\hat\mu,\mathtt{GeoD}) \\
+&+ \lambda_{\mathrm{biLip}}\,\ell_{\mathrm{biLip}}(\hat\mu;\,\mathrm{decode}) \\
 &+ \lambda_{\mathrm{sparse}}\,\ell_{\mathrm{sparse}}(\hat A) \\
 &+ \lambda_{\mathrm{moral}}\,\ell_{\mathrm{moral}}(\hat A, A^{t-1}),\footnotemark\\
 &\quad A^{t-1}\ \text{is the binary adjacency matrix estimated in the previous} \\
@@ -254,20 +297,30 @@ The resulting per-image loss, replacing \texttt{Trainer.step} of \cref{app:code}
 \label{eq:pseudoinj-loss}
 \end{equation}
 \footnotetext{Ng implementation dropped the moral loss term in their implementation --
-see \cref{app:code:lossterms}.}%
+see \cref{app:code:lossterms}. Here it is implemented in \texttt{losses.py}, with target weight $0$ for
+the first runs.}%
 where $\tilde x$ is the cached IN-VAE embedding (the reconstruction target, one level removed from the raw
 image, as in \nameref{sec:archB}), and the first, second and fifth terms are exactly \cref{app:code}'s
-\texttt{loss\_kl}, \texttt{loss\_rec} and \texttt{loss\_sparsity}. \emph{No Jacobian term appears anywhere
-in \cref{eq:pseudoinj-loss}}, by the decision of \cref{sec:pseudoinj:jacobian}.
+\texttt{loss\_kl}, \texttt{loss\_rec} and \texttt{loss\_sparsity}; the KL term is evaluated, as there,
+as the single-sample estimate $\log q(\hat z\mid x)-\log p(\hat z\mid u)$ summed over the $D$ latents,
+because the content prior mean depends on $\hat z$ itself and no analytic KL exists.
+\emph{No Jacobian term appears anywhere
+in \cref{eq:pseudoinj-loss} except inside $\ell_{\mathrm{biLip}}$}, by the decision of
+\cref{sec:pseudoinj:jacobian}. The weights are not constants: when each term starts, ramps and
+switches off is the subject of \cref{sec:schedule}; the starting targets are $\lambda_{\mathrm{inj}}=0.1$
+and $\lambda_{\mathrm{biLip}}=10^{-4}$, both guesses with no published anchor.
 
 \subsection{Why this is more principled than plain Option B -- and what it still is not}
 \label{sec:pseudoinj:principled}
 Both stages of this pipeline carry an explicit, measurable regularizer toward injectivity: IN-VAE's
 reconstruction training (rewards approximate invertibility directly, unlike a classification objective);
-the head's injective and bi-Lipschitz losses (bound local distortion of distances, with a stated theoretical
-target). Plain \nameref{sec:archB} has neither -- \cref{sec:archB:gap}'s gap is totally unexamined there.
-This is genuinely better: instead of an unknown, unbounded gap, the gap here is a quantity the bi-Lipschitz
-constants put a number on.
+the head's injective and bi-Lipschitz losses (the first bounds the ratio of latent to geodesic
+distances, the second bounds the pulled-back metric of the decoder, each with a stated target).
+Plain \nameref{sec:archB} has neither -- \cref{sec:archB:gap}'s gap is totally unexamined there.
+This is genuinely better: instead of an unknown, unbounded gap, the deviation here has stated targets
+(ratio in $[0.3,1]$, diagonal of the pulled-back metric at most $L$) against which the trained model can
+be measured after the fact, for example by the fraction of held-out pairs whose ratio falls outside the
+band. The regularizers themselves do not report that gap during training.
 
 It is not a proof of injectivity, and \cref{thm:ng}'s hypothesis -- $g$ an exact $C^2$ diffeomorphism onto
 its image -- is still, strictly, violated by both IN-VAE and the head, in exactly the same
@@ -287,34 +340,40 @@ its own gap without softening it.
       was released} (\cref{sec:pseudoinj:blae}), so this note's combination of a fresh
       \texttt{AutoencoderKL} head with BLAE's losses is unverified engineering, not a reproduction of a
       published result. $\lambda_{\mathrm{kl}}$ against $\lambda_{\mathrm{inj}},\lambda_{\mathrm{biLip}}$
-      needs to be tuned empirically, with no prior result to anchor the starting point.
+      needs to be tuned empirically, with no prior result to anchor the starting point; the gradient-scale
+      probe of \cref{sec:schedule:gradlog} is the tool for that.
 \item \textbf{Extreme compression ratio.} \texttt{AutoencoderKL}'s stock configurations target hundreds 
       to thousands of latent channels, not $\sim\!10$; squeezing this far raises real underfitting/
       posterior-collapse risk. \Cref{sec:pseudoinj:arch} above hand-tunes depth and channel width down 
-      for this reason, but the $4\times4\times4=64$ scalars $\to20$-scalar bottleneck introduced there 
+      for this reason, but the $4\times4\times4=64$ scalars $\to2D=20$ scalars bottleneck introduced there 
       is itself a 
-      further, unusually aggressive compression step (pooling/flattening plus one linear layer) with no 
+      further, unusually aggressive compression step (flattening plus one linear layer) with no 
       precedent in the stock class to calibrate against.
 \item \textbf{Fresh initialization, no pretraining head start.} Unlike IN-VAE, the head is trained from
       scratch on $\sim\!18\mathrm{k}$ TI images alone.
 \item \textbf{BLAE losses must be computed on $\hat\mu$, never on the sampled $\hat z$} -- this needs to 
       be explicit in the loss code, not left implicit, since it is easy to accidentally apply it after 
-      the reparameterization step.
+      the reparameterization step. In \texttt{losses.py} both terms read \texttt{out["mu"]}.
 \item \textbf{No VAE implementation exists in the BLAE repository at all}; combining a tested
-      \texttt{AutoencoderKL} \cite{aekl}with a from-scratch reimplementation of BLAE's loss terms is 
+      \texttt{AutoencoderKL} \cite{aekl} with a from-scratch reimplementation of BLAE's loss terms is 
       novel engineering that must be built and validated, not assumed to inherit the paper's toy-scale 
       results.
 \item \textbf{Spatial, not pooled, embeddings, and a non-standard bottleneck.} IN-VAE's output is a
       $32\times16\times16$ tensor, unlike \nameref{sec:archB}'s flat pooled $\sim\!3072$-dim vector; the
-      head must be conv-based to consume this properly, not a bare MLP as in \texttt{app:code}'s
+      head must be conv-based to consume this properly, not a bare MLP as in \cref{app:code}'s
       \texttt{encoder\_mu}/\texttt{encoder\_logvar}. Because stock \texttt{AutoencoderKL} \cite{aekl} 
-      has no
-      built-in path from a spatial bottleneck to a flat per-image vector, the
-      \texttt{quant\_conv}/\texttt{post\_quant\_conv} replacement in \cref{sec:pseudoinj:arch} is
-      hand-written and untested code, not a configuration of an existing, validated path.
-\item \textbf{Resolution mismatch.} IN-VAE candidates (including the chosen one) are pretrained at 
-      $256$px; this note's pipeline currently assumes $224$px throughout (\cref{sec:archB}) and needs 
-      updating if this backbone is adopted.
+      has no built-in path from a spatial bottleneck to a flat per-image vector, the two linear layers
+      of \cref{sec:pseudoinj:arch} (outside the module, which stays unmodified) are hand-written and
+      untested code, not a configuration of an existing, validated path.
+\item \textbf{Forward-mode differentiation in BILIP.} The fused attention kernels in
+      \texttt{AutoencoderKL} have no forward-mode rule, so the plain (math) attention backend is forced
+      inside the bi-Lipschitz term. It costs about $D$ decoder passes per sample on a random fraction of
+      the batch, which is why it is the most expensive term and is started last (\cref{sec:schedule}).
+\item \textbf{Resolution.} IN-VAE candidates (including the chosen one) are pretrained at 
+      $256$px, and the feature-extraction and dataset code of this pipeline (\texttt{extract\_features.py},
+      \texttt{ti\_dataset.py}) use $256\times256$ images and the matching bounding-box transform. The
+      sections on \nameref{sec:archB}, which assume $224$px, are not updated by this and refer to the
+      ResNet-50 pipeline only.
 \item \textbf{Screened candidates.} E2E-VAE and MAETok/STELLAR carry alignment or semantic-shaping losses
       that risk discarding style/location signal, the same failure mode \cref{sec:pretrain} already flags
       for supervised ImageNet pretraining; neither is used here, and any candidate -- including the chosen
@@ -322,46 +381,42 @@ its own gap without softening it.
 \item \textbf{The geodesic-distance table (\texttt{GeoD}) cost, now one stage removed from pixels.} Building
       \texttt{GeoD} on the cached IN-VAE embeddings ($N\!\approx\!18\mathrm{k}$, still $\sim\!8192$-dim)
       is a one-time precompute, run once per choice of backbone/embedding (not per epoch, not per
-      minibatch), with two distinct costs:
+      minibatch). It is implemented in \texttt{geodesic.py} as follows.
       \begin{itemize}[leftmargin=1.3em]
-      \item \emph{Pairwise-distance step}, $O(N^2d)$. Naive broadcasting would try to materialize an
-            $N\times N\times d$ tensor ($\sim\!10$TB at $N=18\mathrm{k}$, $d=8192$) -- infeasible. Use the
-            Gram-matrix identity $\|x-y\|^2=\|x\|^2+\|y\|^2-2x^\top y$ (one matmul, $O(Nd+N^2)$ peak memory)
-            instead; confirm \texttt{sklearn}'s \texttt{kneighbors\_graph} is honoring its
-            \texttt{working\_memory} row-chunking rather than being overridden. Further remedies if still
-            too costly: reduce $d$ via PCA/random projection before this step ($8192\to256$,
-            Johnson-Lindenstrauss-justified, $\sim\!32\times$ cheaper); approximate kNN (FAISS/HNSW,
-            GPU-capable, never materializes a dense pairwise matrix); or a landmark-Isomap variant (exact
-            geodesics from a landmark subset only, e.g.\ $2\mathrm{k}$ of $18\mathrm{k}$, nearest-landmark
-            interpolation for the rest, turning $O(N^2)$ into $O(N_LN)$).
-      \item \emph{All-pairs shortest-path step}, $O(N^2\log N)$ (Dijkstra/Johnson's algorithm over the
-            resulting sparse $k$-NN graph). Remedies: shard per-source Dijkstra runs across CPU processes
-            (embarrassingly parallel); reuse the landmark trick above to cut the number of source runs from
-            $N$ to $N_L$; confirm \texttt{scipy} is selecting Johnson's algorithm (\texttt{method='J'}) for
-            the sparse case rather than defaulting to a slower per-node routine.
+      \item \emph{Optional PCA}, $8192\to256$ (seeded), before the neighbour search, so all distances
+            are Euclidean distances in the PCA subspace (Johnson-Lindenstrauss-style, $\sim\!32\times$
+            cheaper).
+      \item \emph{Pairwise-distance step}, $O(N^2d')$ time. Naive broadcasting would try to materialize an
+            $N\times N\times d$ tensor ($\sim\!10$TB at $N=18\mathrm{k}$, $d=8192$) -- infeasible. The
+            code uses the Gram identity $\|x-y\|^2=\|x\|^2+\|y\|^2-2x^\top y$ in row chunks (one matmul per
+            chunk, peak memory $O(\mathrm{chunk}\cdot N)$, on GPU if available), keeps the $k$ nearest
+            neighbours of each point, and symmetrizes the graph. Float32 cancellation gives edge lengths
+            accurate to about $10^{-3}$, irrelevant for a regularizer. If the $k$-NN graph is
+            disconnected, $k$ is doubled up to a maximum and the step repeated; if it is still
+            disconnected an error is raised, since geodesic distances are infinite between components.
+      \item \emph{All-pairs shortest-path step}, $O(S(E+N\log N))$ for $S$ sources and $E\sim Nk$
+            edges: Dijkstra from each source over the sparse graph, sharded across worker processes
+            (embarrassingly parallel). The weights are non-negative, so plain Dijkstra is the right
+            choice; Johnson's algorithm exists for negative weights and has no advantage here.
+      \item \emph{Storage modes.} \texttt{"full"}: the exact $N\times N$ table ($\sim\!1.3$GB in float32,
+            $\sim\!650$MB in float16, which is acceptable because geodesic distances are a regularization
+            target, optionally a disk memmap). \texttt{"landmark"}: only an $L\times N$ table from $L$
+            random landmarks ($L=2000$: $\sim\!144$MB), with the sub-table approximated as
+            $D_{ij}\approx\min_l\bigl(d(l,i)+d(l,j)\bigr)$. This is an \emph{upper bound}: exact when $i$
+            or $j$ is a landmark or lies on a shortest path through one, and otherwise an overestimate
+            (triangle inequality). An overestimated $D$ lowers the latent/geodesic ratio in the injective
+            loss and so biases it toward pushing pairs apart; prefer \texttt{"full"} when $N^2$ fits
+            in RAM.
       \end{itemize}
-\item \textbf{Memory.} The dense $N\times N$ \texttt{GeoD} table ($\sim\!1.3$GB at $N=18\mathrm{k}$)
-      belongs on CPU (plain array, or \texttt{numpy.memmap} if it outgrows RAM) and should never be copied
-      to GPU in full; slicing a small $B\times B$ submatrix per minibatch on CPU before moving only that
-      slice to GPU (the pattern already used for \texttt{GeoD} indexing) is correct and should be kept.
-      The real risk is upstream, in the pairwise-distance step: doing that naively on GPU can exhaust GPU
-      memory before \texttt{GeoD} is even built; the same Gram-matrix trick, or a GPU-batched approximate-
-      kNN library, avoids this. If \texttt{GeoD} itself is still tight on a given host, storing it as
-      \texttt{float16} (halving it to $\sim\!650$MB at $N=18\mathrm{k}$) is an acceptable fallback, since
-      geodesic distances are a regularization target, not a quantity needing \texttt{float32} precision.
+\item \textbf{Memory.} The table lives on CPU and is never copied to the GPU in full: per minibatch the
+      $B\times B$ sub-table for the batch's dataset row ids is sliced on CPU and only that slice moves to
+      the GPU. The real risk was upstream, in the pairwise-distance step (doing it naively on GPU can
+      exhaust GPU memory before \texttt{GeoD} exists), which the chunked Gram computation avoids. The
+      table is indexed by the row ids of the dataset it was built from, so those ids must stay fixed
+      between building the table and training. It is built on all rows of the selected training
+      locations (training and validation rows together).
 \item \textbf{Still not exact injectivity.} As stated in \cref{sec:pseudoinj:principled}, this pipeline
       bounds and quantifies the gap from \cref{thm:ng}'s exact-diffeomorphism hypothesis; it does not
       close it. Any downstream use of this note's identifiability results should carry this caveat forward
       explicitly.
 \end{itemize}
-
-% ---------------------------------------------------------------------
-% Bibliography entries this section assumes but that are not yet in biblio.tex:
-%   zhan2026blae   -- Zhan et al., "BLAE" / bi-Lipschitz autoencoder, arXiv:2604.06701
-%   leng2025repae  -- Leng et al., REPA-E (or the specific IN-VAE checkpoint's source paper)
-%   (optionally: a citation for SD-VAE/latent-diffusion VAEs and the original
-%    VAE paper (Kingma and Welling), if you want them cited by name rather
-%    than referred to descriptively as above)
-% Also not yet defined in this note: \label{app:code:lossterms} referenced in the
-% footnote on the moral-loss term -- point it at the right subsection of app_ng_reference_impl.tex
-% (currently that file has no such label).
