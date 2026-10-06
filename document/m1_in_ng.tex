@@ -165,3 +165,76 @@ less. \Cref{prop:m1req} states necessary conditions for \cref{as:2}; sufficiency
 \cref{rem:suff}. For M1 under the assumptions of \cref{ex:numbers}, the bounds allow up to nine content
 latents if $\Gc$ is empty, correspondingly fewer for denser $\Gc$, and at most two style latents.
 \end{remark}
+
+\subsection{False sinks: the problem, its cause, and how to see it offline}
+\label{sec:apply:falsesink}
+
+\paragraph{The problem.}
+The estimator of \cref{sec:use} freezes a node once it is declared a sink of the remaining graph, 
+and a frozen row and column are never revisited (\cref{app:code}). A \emph{false sink} is a node 
+that is frozen although it has a child in the data-generating graph. Once it happens, the final 
+graph is wrong for good, and every later freezing decision is made on a wrongly reduced problem.
+
+\paragraph{Root cause.}
+Two ingredients combine.
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{The order is fixed, not searched.} The adjacency is strictly lower-triangular in the 
+      latent index, so the search space is ``which lower-triangular entries are on''. Every DAG fits 
+      this form after relabelling the latents in a topological order, hence the true graph is 
+      representable up to a permutation. Representable is not selected: nothing in the likelihood 
+      prefers a topological order 
+      \footnote{Ordering s.t. every directed edge goes from an earlier vertex to a later vertex.
+      ``Earlier'' and ``later'' just mean earlier or later in the chosen order of vertices.}
+      of the true graph, and within one environment, graphs with the 
+      same skeleton (a chain and a fork) are likelihood-equivalent. If the encoder places a node 
+      with a child in the last slot of the order, the edge to that child cannot be represented, and 
+      that node is frozen first, as the last slot is always a sink by construction.
+\item \emph{The sink decision is a mask heuristic.} A node is declared a sink when its column of the
+      thresholded adjacency is zero under the sparsity penalty. A weak true edge whose likelihood 
+      gain is below \texttt{lambda\_sparse}, or one that is dropped while the prior mean network is 
+      still poor, leaves a zero column and a false sink.
+\end{itemize}
+The theory certifies sinks differently: through the vanishing of
+$\partial^3\log p^{(u)}/\partial Z_i^2\partial Z_j$ of the data density across sufficiently varying
+environments (\cref{thm:ng,as:2}). The code does not run this test. Evaluating the same derivative 
+on the \emph{learned} ANM prior does not replace it: if the adjacency says $Z_i$ has no children, 
+then $Z_i$ appears only in its own Gaussian term, and the third derivative vanishes by construction, 
+so the check can only confirm what the adjacency already says.
+
+\paragraph{How it manifests.}
+Mostly not at all. A wrong graph is still a valid prior, so the run ends as \texttt{finished}, not
+suspect (no cap is hit, since freezing succeeded), and \texttt{rec}, \texttt{kl} and the validation
+accuracy look normal. Weak hints are: many columns going to zero at the first check, a suspiciously 
+sparse final adjacency, and graphs that differ between seeds. A freeze of the last-index node at the 
+first check carries no information.
+
+\paragraph{Offline checks.}
+For the goal of this note, prediction at an unseen location, macro accuracy and the structure of the
+latents are the criteria, and they are no worse than the heuristic tests above. None of them 
+certifies the graph.
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+\item \textbf{Macro accuracy on a held-out training location.} The validation slice of the training
+      locations measures within-location accuracy only, and style leaking into the content latents 
+      does not show up there. Use leave-one-location-out over L38/L43/L46; L100 stays untouched 
+      until the end.
+\item \textbf{Degenerate graphs.} Reject an empty graph, a dense one, or a different graph on every 
+      seed. Beyond this the latents have no semantic labels, so a graph cannot be judged by eye.
+\item \textbf{Seed agreement.} Run several seeds, match latents across runs by the correlation of 
+      the encoded means, and compare graphs up to permutation. Disagreement means that the data do 
+      not determine the order. If the held-out loss is equal for the competing graphs, the data 
+      cannot distinguish them, which is the chain-versus-fork ambiguity.
+\item \textbf{Embeddings of the latents.} Encode with the posterior mean $\hat\mu$, not a sampled
+      $\hat z$ (the sample adds fresh noise on every pass), and colour the same embedding in several 
+      ways: content latents by species (clusters expected); content latents by location, in 
+      particular within a fixed $(y,t)$ (mixed expected, separation means that style leaked into 
+      content, a check of \labelcref{item:P2}); style latents by location and by time of day 
+      (structure expected), and by species (none expected). With two style latents plot them 
+      directly as a 2D scatter. Include L100, encoded by the same model and never trained on: points 
+      inside the species clusters predict transfer, a separate island means that content is not 
+      invariant to location. Use t-SNE or UMAP only as ``separated versus mixed'', as distances and 
+      cluster sizes are not meaningful; check two or three seeds or perplexities.
+\end{enumerate}
+A direct derivative test of the data density, with a flexible density estimated per cell, is 
+possible in principle, but third derivatives from small cells are very noisy and the test is not 
+used here. What is given up is any claim that the recovered graph is causal; for domain 
+generalization this claim is not needed.
