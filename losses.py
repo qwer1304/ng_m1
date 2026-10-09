@@ -16,7 +16,7 @@ Each loss class is a self-contained object. It owns, behind methods:
   * its own answer to "am I ready?" (ready()).
 The MODEL makes only the global, cross-loss decisions, from the user cfg,
 and executes them through the methods below. Examples: "do not start KL
-until REC is ready", "start SPARSE when KL is ready", "switch SPARSE and
+until REC is ready", "start SPARSE when KL has settled", "switch SPARSE and
 MORAL off when all content nodes are frozen", "if REC has not plateaued by
 epoch 30, ...". The model never computes a loss and never looks inside one.
 
@@ -37,7 +37,8 @@ initial weight in epoch e+1 and gains one step at the end of each following
 epoch.
 
 stats passed to end_epoch: dict with the epoch means of the unweighted terms
-(stats["rec"], stats["kl"], ...), computed by the Trainer.
+(stats["rec"], stats["kl"], ...), computed by the Trainer, plus the
+validation numbers (stats["val_kl"], ...) when a validation set exists.
 
 =======================================================================
 THE TOTAL LOSS (per minibatch, all terms are batch means / scalars)
@@ -349,16 +350,65 @@ class KLLoss(ScheduledLoss):
       * the ramp (linear, kl_ramp_epochs, to target) is started by the model
         once REC.ready() (the plateau). The model owns the cap on that wait.
       * ready() (default) is True once the ramp has reached the target; the
-        model starts SPARSE then.
+        model then switches the adjacency from the full off-diagonal mask to
+        the lower-triangular one.
+      * KL also owns the SETTLE detector, used after that switch: settled()
+        is True once the epoch-mean KL (validation KL when stats has
+        "val_kl", else train KL) has changed by less than `settle_tol`
+        (relative) between `settle_window` epochs ago and now, counting only
+        epochs observed since the last reset_settle(). The model calls
+        reset_settle() at the switch (the KL term itself jumps there, so the
+        history from before it must not count). Latches until the next
+        reset. KL is a single-sample estimate and noisy, hence the separate
+        window and tolerance (config: settle_window, settle_tol).
     """
 
     def __init__(self, target: float, init_frac: float, ramp_epochs: int,
+                 settle_window: int = 5, settle_tol: float = 0.02,
                  enabled: bool = True):
         super().__init__("kl", target, ramp_epochs=ramp_epochs, init_frac=init_frac,
                          enabled=enabled)
+        self.settle_window, self.settle_tol = int(settle_window), float(settle_tol)
+        self.settle_history: List[float] = []
+        self.settle_flag = False
+        self.last_observed: Optional[float] = None
 
     def forward(self, out):
         return kl_mc(out["log_q"], out["log_p"])
+
+    # ---------------- settle detector ----------------
+    def observe(self, stats):
+        kl = float(stats["val_kl"]) if "val_kl" in stats else float(stats["kl"])
+        self.last_observed = kl
+        self.settle_history = (self.settle_history + [kl])[-(self.settle_window + 1):]
+        if not self.settle_flag and len(self.settle_history) == self.settle_window + 1:
+            old, new = self.settle_history[0], self.settle_history[-1]
+            if abs(new - old) < self.settle_tol * max(abs(old), 1e-12):
+                self.settle_flag = True
+
+    def settled(self) -> bool:
+        return self.settle_flag
+
+    def reset_settle(self) -> None:
+        """Forget the history and un-latch (the model calls this at the switch)."""
+        self.settle_history, self.settle_flag = [], False
+
+    def info(self) -> dict:
+        return {"last_observed": self.last_observed, "settled": self.settle_flag}
+
+    def schedule_state(self) -> dict:
+        s = super().schedule_state()
+        s.update({"settle_history": list(self.settle_history),
+                  "settle_flag": self.settle_flag,
+                  "last_observed": self.last_observed})
+        return s
+
+    def load_schedule_state(self, s: dict) -> None:
+        super().load_schedule_state(s)
+        # .get: checkpoints written before the settle detector have no keys
+        self.settle_history = list(s.get("settle_history", []))
+        self.settle_flag = bool(s.get("settle_flag", False))
+        self.last_observed = s.get("last_observed")
 
 
 class SparseLoss(ScheduledLoss):
@@ -371,7 +421,8 @@ class SparseLoss(ScheduledLoss):
     subtracted, so the value is never 0 while the block is non-empty.
 
     Decisions for this loss
-      * inactive (weight 0) until the model starts it, when KL.ready().
+      * inactive (weight 0) until the model starts it, when the adjacency
+        has been switched to lower-triangular and KL has settled.
       * linear ramp (sparse_ramp_epochs) from 0 to target.
       * the model switches it off when all content nodes are frozen (the
         block is then empty and the graph is fixed).
@@ -517,7 +568,8 @@ class M1Losses(nn.Module):
         en = cfg.schedule
         self.terms = nn.ModuleDict({
             "rec": RecLoss(cfg.lambda_rec, cfg.plateau_window, cfg.plateau_tol, enabled=en),
-            "kl": KLLoss(cfg.lambda_kl, cfg.kl_init_frac, cfg.kl_ramp_epochs, enabled=en),
+            "kl": KLLoss(cfg.lambda_kl, cfg.kl_init_frac, cfg.kl_ramp_epochs,
+                         cfg.settle_window, cfg.settle_tol, enabled=en),
             "sparse": SparseLoss(cfg.lambda_sparse, n_content, cfg.sparse_ramp_epochs, enabled=en),
             "moral": MoralLoss(cfg.lambda_moral, n_content, cfg.moral_ramp_epochs, enabled=en),
             "inj": InjLoss(cfg.lambda_inj, cfg.inj_thresh, enabled=en),

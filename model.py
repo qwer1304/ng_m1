@@ -15,10 +15,26 @@ own: the Trainer owns every loop and every call.
 WHO DECIDES WHAT
 =======================================================================
 Each loss owns its computation, ramp, readiness and bookkeeping (losses.py);
-the sink-check gate owns the freezing logic (m1net.py). The model owns only
-the rules that involve more than one of them, listed below, one method each,
-so each rule can be read and tuned on its own. All numbers come from
-config.ScheduleRules; nothing is hard-coded here.
+the sink-check gate owns the freezing logic and the prior owns the order
+mode of the adjacency (m1net.py). The model owns only the rules that involve
+more than one of them, listed below, one method each, so each rule can be
+read and tuned on its own. All numbers come from config.ScheduleRules;
+nothing is hard-coded here.
+
+=======================================================================
+THE ORDER BLEND (phase 0, then a ramp to the lower-triangular graph)
+=======================================================================
+With scheduling enabled the adjacency starts at blend a = 0, the "full" mode
+(every latent predicted from all the others, diagonal removed, nothing
+learned in the graph): the head and the prior train without any slot order
+imprinted on the latents. When the KL ramp is done (KL.ready()),
+_rule_tril_start starts a linear ramp of a from 0 to 1 over
+schedule.tril_ramp_epochs (the adjacency is (1-a)*full + a*learned
+lower-triangular, so the prior changes smoothly and Adam sees no jump).
+_rule_tril_ramp advances it, like a loss ramp. When a reaches 1 the mode is
+"tril"; KL's settle detector is reset there. SPARSE starts only when KL has
+settled after that (or at the cap tril_cap, with a warning). With scheduling
+disabled a = 1 from epoch 1.
 
 =======================================================================
 end_epoch(epoch, stats): THE FIXED SEQUENCE (epochs are 1-based)
@@ -35,7 +51,11 @@ end_epoch(epoch, stats): THE FIXED SEQUENCE (epochs are 1-based)
   3. the rules, in this order:
        _rule_kl_start             KL starts when REC is ready; cap kl_cap.
        _rule_bilip_start          BILIP starts when REC is ready; cap bilip_cap.
-       _rule_sparse_start         SPARSE starts when KL is ready.
+       _rule_tril_start           start the blend ramp "full" -> "tril" when
+                                  KL is ready.
+       _rule_tril_ramp            advance the blend; at 1, reset KL's settle.
+       _rule_sparse_start         SPARSE starts when KL has settled after the
+                                  blend reached 1; cap tril_cap.
        _rule_moral_start          MORAL starts at the first sink check.
        _rule_off_when_all_frozen  SPARSE and MORAL switch off when every
                                   content node is frozen.
@@ -44,9 +64,11 @@ end_epoch(epoch, stats): THE FIXED SEQUENCE (epochs are 1-based)
   5. returns a Status (stop, reason, suspect, this epoch's decisions and
      warnings, current weights).
 stats must contain the epoch means of the unweighted terms
-(stats["rec"], stats["kl"], ...), computed by the Trainer.
-A decision takes effect from the next epoch (weights are read on every
-forward pass; a ramp started now uses its initial weight next epoch).
+(stats["rec"], stats["kl"], ...), computed by the Trainer; stats["val_kl"]
+is used by KL's settle detector when present.
+A decision takes effect from the next epoch (weights and the order mode are
+read on every forward pass; a ramp started now uses its initial weight next
+epoch).
 
 Every decision and warning is appended to a log (epoch, text), kept in the
 schedule state, so a finished run shows exactly why each loss started or
@@ -56,16 +78,17 @@ stopped when it did.
 DISABLED MODE (schedule.enabled = False)
 =======================================================================
 Only steps 1 and 2 run, and the gate is on its fixed clock. Every loss uses
-its target weight from epoch 1. The model never says stop except at
-max_epochs. (The MORAL snapshot is still taken after a freeze, as in the
-original model.)
+its target weight from epoch 1 and the order blend is 1 ("tril") from epoch 1.
+The model never says stop except at max_epochs. (The MORAL snapshot is still
+taken after a freeze, as in the original model.)
 
 =======================================================================
 CHECKPOINT
 =======================================================================
 schedule_state() / load_schedule_state(s): everything non-learnable that the
-model owns or assembles: the losses' state (incl. MORAL's prev_adj/k_min and
-REC's plateau history), the gate state, run control, the decision log. The
+model owns or assembles: the losses' state (incl. MORAL's prev_adj/k_min,
+REC's plateau history and KL's settle history), the gate state and order
+blend, run control (incl. the epochs of the switch), the decision log. The
 Trainer calls them; sure_mask / sure_adj are buffers and are saved with the
 normal state_dict.
 """
@@ -81,7 +104,7 @@ import torch.nn as nn
 
 from config import RunConfig
 from losses import M1Losses
-from m1net import M1Net, M1NetConfig
+from m1net import M1Net, M1NetConfig, ORDER_FULL, ORDER_TRIL
 
 
 # ======================================================================
@@ -140,10 +163,16 @@ class M1Model(nn.Module):
         self.net = M1Net(net_cfg)
         self.losses = M1Losses(self.run_cfg.loss, net_cfg.n_content)
         self.rules = self.run_cfg.schedule
+        # phase 0 (enabled mode) starts with the full off-diagonal mask (blend
+        # 0); a resume overwrites this through load_schedule_state
+        self.net.set_order_mode(ORDER_FULL if self.rules.enabled else ORDER_TRIL)
         self._init_run_state()
 
     def _init_run_state(self) -> None:
         self.frozen_epoch: Optional[int] = None  # epoch at which all nodes froze
+        self.tril_epoch: Optional[int] = None  # epoch at which the blend ramp started
+        self.tril_pos = 0  # epochs of the blend ramp done so far
+        self.tril_done_epoch: Optional[int] = None  # epoch at which the blend reached 1
         self.caps_hit: List[list] = []  # [epoch, name]
         self.stopped = False
         self.stop_reason: Optional[str] = None
@@ -202,6 +231,8 @@ class M1Model(nn.Module):
         if self.rules.enabled:
             self._rule_kl_start(epoch, log)
             self._rule_bilip_start(epoch, log)
+            self._rule_tril_start(epoch, log)
+            self._rule_tril_ramp(epoch, log)
             self._rule_sparse_start(epoch, log)
             self._rule_moral_start(epoch, log)
             self._rule_off_when_all_frozen(epoch, log)
@@ -296,12 +327,67 @@ class M1Model(nn.Module):
             T["bilip"].start()
             log.warn(f"bilip: no REC plateau by epoch {r.bilip_cap}; ramp started anyway")
 
+    def _rule_tril_start(self, epoch: int, log: _EpochLog) -> None:
+        """
+        Start the blend ramp from the full off-diagonal mask to the learned
+        lower-triangular one when KL is ready (its ramp reached the target),
+        once. The blend stays 0 until the end of the next epoch (as a loss
+        ramp uses its initial weight in the epoch after it started). With
+        tril_ramp_epochs <= 0 the switch is immediate.
+        """
+        if self.tril_epoch is not None:
+            return
+        T, r = self.losses.terms, self.rules
+        if T["kl"].ready():
+            self.tril_epoch, self.tril_pos = epoch, 0
+            log.decide(f"tril: blend ramp started (KL ramp done; "
+                       f"{r.tril_ramp_epochs} epochs)")
+            if r.tril_ramp_epochs <= 0:
+                self._finish_tril(epoch, log)
+
+    def _rule_tril_ramp(self, epoch: int, log: _EpochLog) -> None:
+        """
+        Advance the blend by one step at the end of every epoch after the
+        one in which the ramp started; when it reaches 1, finish.
+        """
+        if self.tril_epoch is None or self.tril_done_epoch is not None:
+            return
+        if epoch <= self.tril_epoch:
+            return
+        R = self.rules.tril_ramp_epochs
+        self.tril_pos += 1
+        a = min(1.0, self.tril_pos / R)
+        self.net.set_order_blend(a)
+        if a >= 1.0:
+            self._finish_tril(epoch, log)
+
+    def _finish_tril(self, epoch: int, log: _EpochLog) -> None:
+        """The blend is 1: mode "tril". KL's settle detector starts from
+        here (the history from before it must not count)."""
+        self.net.set_order_mode(ORDER_TRIL)
+        self.losses.terms["kl"].reset_settle()
+        self.tril_done_epoch = epoch
+        log.decide("tril: adjacency is lower-triangular now (blend 1)")
+
     def _rule_sparse_start(self, epoch: int, log: _EpochLog) -> None:
-        """SPARSE starts its ramp when KL is ready (its ramp reached the target)."""
-        T = self.losses.terms
-        if not T["sparse"].started and T["kl"].ready():
+        """
+        SPARSE starts its ramp once the blend has reached 1 and KL has
+        settled since (KL.settled(), counted from then). Cap: `tril_cap`
+        epochs after the blend reached 1, then start anyway, with a warning
+        (a reversible decision: the run continues).
+        """
+        T, r = self.losses.terms, self.rules
+        if T["sparse"].started or self.tril_done_epoch is None:
+            return
+        if T["kl"].settled():
             T["sparse"].start()
-            log.decide("sparse: ramp started (KL ramp done)")
+            log.decide("sparse: ramp started (KL settled after the switch to tril)")
+        elif epoch - self.tril_done_epoch >= r.tril_cap:
+            log.cap("tril")
+            T["sparse"].start()
+            log.warn(f"sparse: KL not settled {r.tril_cap} epochs after the adjacency "
+                     f"became lower-triangular (epoch {self.tril_done_epoch}); "
+                     f"ramp started anyway")
 
     def _rule_moral_start(self, epoch: int, log: _EpochLog) -> None:
         """MORAL starts its ramp at the first successful sink check (its
@@ -361,7 +447,9 @@ class M1Model(nn.Module):
         return {
             "losses": self.losses.schedule_state(),
             "net": self.net.schedule_state(),
-            "run": {"frozen_epoch": self.frozen_epoch, "caps_hit": [list(c) for c in self.caps_hit],
+            "run": {"frozen_epoch": self.frozen_epoch, "tril_epoch": self.tril_epoch,
+                    "tril_pos": self.tril_pos, "tril_done_epoch": self.tril_done_epoch,
+                    "caps_hit": [list(c) for c in self.caps_hit],
                     "stopped": self.stopped, "stop_reason": self.stop_reason,
                     "gate_info": self.gate_info, "gate_open_epoch": self.gate_open_epoch},
             "decision_log": [list(x) for x in self.decision_log],
@@ -373,6 +461,13 @@ class M1Model(nn.Module):
         self.net.load_schedule_state(s["net"])
         run = s["run"]
         self.frozen_epoch, self.stopped = run["frozen_epoch"], run["stopped"]
+        # .get: checkpoints written before the order mode existed have no such key
+        self.tril_epoch = run.get("tril_epoch")
+        self.tril_pos = run.get("tril_pos", 0)
+        self.tril_done_epoch = run.get("tril_done_epoch")
+        if "tril_epoch" in run and self.tril_epoch is not None and self.tril_done_epoch is None \
+                and "tril_pos" not in run:  # state from the previous (immediate-switch) version
+            self.tril_done_epoch = self.tril_epoch
         self.caps_hit = [list(c) for c in run["caps_hit"]]
         self.stop_reason, self.gate_info = run["stop_reason"], run["gate_info"]
         self.gate_open_epoch = run["gate_open_epoch"]
@@ -383,14 +478,19 @@ class M1Model(nn.Module):
     def report(self) -> dict:
         """
         Final report (validation accuracy is the Trainer's, not included):
-        whether all nodes froze, freeze order and epochs, caps hit, the final
-        graph with degrees (parents = row sums, children = column sums), the
-        suspect flag, the decision and warning logs, per-loss info.
+        whether all nodes froze, freeze order and epochs, the epochs at which the
+        blend ramp to the lower-triangular order started and finished, caps hit, the final graph with
+        degrees (parents = row sums, children = column sums), the suspect
+        flag, the decision and warning logs, per-loss info.
         """
         adj = self.net.prior.get_adj().detach().int()
         return {
             "all_frozen": self.all_frozen,
             "freeze_log": [list(x) for x in self.net.prior.gate.freeze_log],  # [epoch, node]
+            "order_mode": self.net.order_mode,
+            "order_blend": self.net.order_blend,
+            "tril_epoch": self.tril_epoch,
+            "tril_done_epoch": self.tril_done_epoch,
             "caps_hit": [list(c) for c in self.caps_hit],
             "suspect": self.suspect,
             "stop_reason": self.stop_reason,

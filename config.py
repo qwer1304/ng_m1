@@ -11,7 +11,7 @@ THE TREE
 =======================================================================
   RunConfig
     loss      LossConfig     target weights, per-loss ramps, REC plateau test,
-                             BLAE hyper-parameters
+                             KL settle test, BLAE hyper-parameters
     gate      GateConfig     sink-check gate (mode, check_epoch, W/cap table)
     schedule  ScheduleRules  the global, cross-loss rules (caps, run control)
                              and the global on/off switch
@@ -27,9 +27,10 @@ it and are set by RunConfig.finalize(), whatever the user wrote there:
     loss.schedule = schedule.enabled
     gate.mode     = "stable" if schedule.enabled else "clock"
 So "disabled" means: every loss uses its target weight from epoch 1, the
-sink check runs on the fixed clock (every gate.check_epoch epochs), there
-are no caps and no fine-tune phase, and the run stops only at max_epochs.
-(The probe is independent of this switch.)
+adjacency is lower-triangular from epoch 1, the sink check runs on the fixed
+clock (every gate.check_epoch epochs), there are no caps and no fine-tune
+phase, and the run stops only at max_epochs. (The probe is independent of
+this switch.)
 
 =======================================================================
 HOW VALUES ARRIVE (main.py)
@@ -68,6 +69,13 @@ class LossConfig:
       kl_init_frac        KL weight before its ramp starts, fraction of target
       kl_ramp_epochs, sparse_ramp_epochs, moral_ramp_epochs, bilip_ramp_epochs
       plateau_window, plateau_tol    REC plateau test (REC owns the detector)
+      settle_window, settle_tol      KL settle test (KL owns the detector):
+                          the (validation, else train) epoch-mean KL has
+                          changed by less than settle_tol (relative) between
+                          settle_window epochs ago and now, counting from
+                          the last reset (the switch of the adjacency to
+                          lower-triangular). KL is noisier than REC, hence
+                          separate numbers.
     schedule              DERIVED from ScheduleRules.enabled by finalize().
     BLAE hyper-parameters:
       inj_thresh          lower ratio bound of the injective loss (0.3)
@@ -91,6 +99,8 @@ class LossConfig:
     bilip_ramp_epochs: int = 20
     plateau_window: int = 5
     plateau_tol: float = 0.01
+    settle_window: int = 5
+    settle_tol: float = 0.02
     schedule: bool = True  # derived
     inj_thresh: float = 0.3
     bilip_L: float = 2.0
@@ -109,6 +119,8 @@ class LossConfig:
             raise ValueError("kl_init_frac must be in [0, 1].")
         if self.plateau_window < 1 or self.plateau_tol <= 0:
             raise ValueError("need plateau_window >= 1 and plateau_tol > 0.")
+        if self.settle_window < 1 or self.settle_tol <= 0:
+            raise ValueError("need settle_window >= 1 and settle_tol > 0.")
         if not 0.0 < self.bilip_subset_frac <= 1.0:
             raise ValueError("bilip_subset_frac must be in (0, 1].")
 
@@ -183,6 +195,14 @@ class ScheduleRules:
                      warning saying so.
     bilip_cap        BILIP waits for the REC plateau at most this many
                      epochs, then starts anyway, with a warning.
+    tril_ramp_epochs when KL is ready, the adjacency is blended from the
+                     full off-diagonal mask to the lower-triangular one,
+                     a = 0 -> 1 linearly over this many epochs (<= 0: switch
+                     at once). No jump in the prior, hence none in the
+                     gradients Adam has to follow.
+    tril_cap         once the blend has reached 1, SPARSE waits for the KL
+                     settle test at most this many epochs, then starts
+                     anyway, with a warning.
     rec_frac         fraction of the trivial REC baseline used at the KL cap.
     gate_open_frac   the sink-check gate is held off until SPARSE's weight
                      reaches this fraction of its target (quick hack: the
@@ -198,14 +218,18 @@ class ScheduleRules:
     enabled: bool = True
     kl_cap: int = 30
     bilip_cap: int = 60
+    tril_ramp_epochs: int = 10
+    tril_cap: int = 60
     rec_frac: float = 0.5
     gate_open_frac: float = 0.5
     max_epochs: int = 250
     finetune_epochs: int = 20
 
     def validate(self) -> None:
-        if self.kl_cap < 1 or self.bilip_cap < 1:
-            raise ValueError("kl_cap and bilip_cap must be >= 1.")
+        if self.kl_cap < 1 or self.bilip_cap < 1 or self.tril_cap < 1:
+            raise ValueError("kl_cap, bilip_cap and tril_cap must be >= 1.")
+        if self.tril_ramp_epochs < 0:
+            raise ValueError("tril_ramp_epochs must be >= 0.")
         if not 0.0 < self.rec_frac <= 1.0:
             raise ValueError("rec_frac must be in (0, 1].")
         if not 0.0 <= self.gate_open_frac <= 1.0:
@@ -381,8 +405,16 @@ if __name__ == "__main__":
     c2 = RunConfig.from_dict(json.loads(json.dumps(c.to_dict()))).finalize()
     assert c2.to_dict() == c.to_dict()
     assert RunConfig().finalize().gate.mode == "stable"
+    c3 = RunConfig().with_overrides(["loss.settle_window=7", "loss.settle_tol=0.05",
+                                     "schedule.tril_cap=33"]).finalize()
+    assert c3.loss.settle_window == 7 and c3.loss.settle_tol == 0.05
+    assert c3.schedule.tril_cap == 33
+    assert RunConfig().finalize().schedule.tril_ramp_epochs == 10
+    assert RunConfig().with_overrides(["schedule.tril_ramp_epochs=0"]).finalize().schedule.tril_ramp_epochs == 0
     for bad in (["nope.x=1"], ["loss.nope=1"], ["schedule.rec_frac=2"],
-                ["probe.band_lo=20"], ["probe.n_batches=0"], ["probe.target=0"]):
+                ["probe.band_lo=20"], ["probe.n_batches=0"], ["probe.target=0"],
+                ["loss.settle_window=0"], ["loss.settle_tol=0"],
+                ["schedule.tril_cap=0"], ["schedule.tril_ramp_epochs=-1"]):
         try:
             RunConfig().with_overrides(bad).finalize()
         except (KeyError, ValueError):

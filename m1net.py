@@ -19,7 +19,8 @@ WHAT IS IN THIS FILE, AND WHERE EACH PIECE COMES FROM
   M1Prior          Ng et al. prior (ANM), extended per the note: domain
                    conditioning split by block (content on c=(y,t), style
                    on r=(t,e)). Includes Ng's sink-freezing heuristic and
-                   OWNS the gate that decides when to apply it.
+                   OWNS the gate that decides when to apply it, and the
+                   ORDER BLEND of the adjacency ("full" -> "tril", below).
   M1Net            Ties HEAD + M1Prior together. This is the module a
                    Trainer optimizes.
   (All loss computations, including the BLAE ones, live in losses.py.)
@@ -30,7 +31,8 @@ WHAT IS *NOT* IN THIS FILE
       out["current_adj"], out["mu"], and head.decode)
     * optimizers, schedules, the GeoD table, the training loop. The model
       (model.py) calls M1Net.gate_end_epoch(epoch) when the Trainer asks it
-      to run the end-of-epoch scheduling.
+      to run the end-of-epoch scheduling, and M1Net.set_order_blend(...) when
+      its rules say so.
 
 =======================================================================
 PIPELINE
@@ -50,8 +52,23 @@ Observed integer labels per image: species y, time-of-day t, location e.
 
 Content block, ANM (Gaussian additive noise; scale depends on c only):
   z_c,i ~ N( f_i^{(c)}( A[i,:] * z_c ),  exp(content_logvar_i^{(c)}) )
-  A = lower-triangular 0/1 adjacency over content latents; A[i,j]=1 means
-  j is a parent of i. Causal order = index order (not searched), as in Ng.
+  A[i,j]=1 means j is a parent of i. What A is depends on the ORDER BLEND a
+  (a float in [0,1], owned by M1Prior, set by the model):
+    a = 1  "tril" : strictly lower-triangular 0/1 matrix learned by
+             ADJMatrix (causal order = index order, not searched, as in Ng).
+    a = 0  "full" : the constant matrix of ones with a zero diagonal. Every
+             latent is predicted from ALL the others. Nothing is learned in
+             A and no slot order is imprinted on the latents. The diagonal
+             is always removed: a latent that sees itself makes the prior
+             collapse. In this mode the KL term is a pseudo-likelihood (a
+             product of full conditionals), not a normalized joint; it is a
+             legitimate training signal but not a true KL.
+    0 < a < 1     : A = (1-a)*full + a*tril, a smooth transition (no jump in
+             the prior). Reported as order_mode "blend".
+  The blend starts at 1 and the model sets 0 at construction when scheduling
+  is enabled, then ramps it to 1 (set_order_blend). While a < 1 the
+  sink-freezing machinery is inert (nothing is frozen, the gate does
+  nothing); at a = 0 the raw adjacency parameter gets no gradient.
 Style block (isolated nodes, no parents, independent of species):
   z_s,j ~ N( mu_j^{(r)}, exp(style_logvar_j^{(r)}) )
 
@@ -91,11 +108,12 @@ asks to do the end-of-epoch scheduling). Two modes (GateConfig.mode):
 The gate returns a GateResult: events ("first_sink_check", "all_frozen",
 "cap_hit:sink_check"), a stop reason if any, the global ids of the nodes
 frozen in this call, and an info dict (cap case). No margin (hysteresis) in
-the binarization and no intervention at the cap yet: deferred.
+the binarization and no intervention at the cap yet: deferred. The gate does
+nothing while the order blend is below 1.
 
 Gate state is plain python (SinkGate.state_dict) and goes into the
-checkpoint through M1Prior.schedule_state(); sure_mask / sure_adj are
-buffers and are saved with the model.
+checkpoint through M1Prior.schedule_state(), together with the order blend;
+sure_mask / sure_adj are buffers and are saved with the model.
 
 =======================================================================
 DEVIATIONS FROM Ng's SINK-FREEZING CODE (deliberate; read this)
@@ -127,6 +145,11 @@ from head import HEAD, HeadConfig
 EV_FIRST_SINK_CHECK = "first_sink_check"
 EV_ALL_FROZEN = "all_frozen"
 EV_CAP_SINK = "cap_hit:sink_check"
+
+# the orders of the adjacency (see module docstring); "blend" is 0 < a < 1
+ORDER_FULL = "full"
+ORDER_TRIL = "tril"
+ORDER_BLEND = "blend"
 
 
 # ======================================================================
@@ -352,8 +375,10 @@ class M1Prior(nn.Module):
 
     Holds: content_emb, style_emb, content mechanism f, content log-variance
     net, style (mean, logvar) net, ADJMatrix, the sink-freezing buffers
-    sure_mask / sure_adj (both (n_content, n_content), not trainable), and
-    the sink-check gate (self.gate, a SinkGate).
+    sure_mask / sure_adj (both (n_content, n_content), not trainable), the
+    sink-check gate (self.gate, a SinkGate) and the order blend
+    (self.order_blend in [0,1], plain python state; the model sets it, see
+    the module docstring). order_mode is derived from it.
     """
 
     def __init__(self, cfg: M1NetConfig):
@@ -384,6 +409,32 @@ class M1Prior(nn.Module):
         self.register_buffer("sure_mask", torch.zeros(nc, nc))
         self.register_buffer("sure_adj", torch.zeros(nc, nc))
         self.gate = SinkGate(cfg.gate)  # plain python state, not a buffer
+        self.order_blend: float = 1.0  # plain python state, not a buffer
+
+    # ---------------- order blend ----------------
+    def set_order_blend(self, a: float) -> None:
+        """Set the blend between the full off-diagonal mask (a=0) and the
+        learned lower-triangular one (a=1). The model decides when and how
+        fast; this only executes."""
+        a = float(a)
+        if not 0.0 <= a <= 1.0:
+            raise ValueError(f"order blend must be in [0, 1], got {a}")
+        self.order_blend = a
+
+    def set_order_mode(self, mode: str) -> None:
+        """Convenience: "full" -> blend 0, "tril" -> blend 1."""
+        if mode not in (ORDER_FULL, ORDER_TRIL):
+            raise ValueError(f"order mode must be {ORDER_FULL!r} or {ORDER_TRIL!r}, got {mode!r}")
+        self.set_order_blend(0.0 if mode == ORDER_FULL else 1.0)
+
+    @property
+    def order_mode(self) -> str:
+        """"full" (a=0), "tril" (a=1) or "blend"."""
+        if self.order_blend <= 0.0:
+            return ORDER_FULL
+        if self.order_blend >= 1.0:
+            return ORDER_TRIL
+        return ORDER_BLEND
 
     # ---------------- graph / sink freezing ----------------
     def _unfrozen(self) -> torch.Tensor:
@@ -392,16 +443,27 @@ class M1Prior(nn.Module):
 
     def get_adj(self, soft: bool = False, current: bool = False) -> torch.Tensor:
         """
-        current=False : full (nc, nc) adjacency; frozen entries come from
-                        sure_adj, the rest from the learnable matrix.
+        current=False : full (nc, nc) adjacency. Blend a=1 ("tril"): frozen
+                        entries come from sure_adj, the rest from the
+                        learnable matrix. a=0 ("full"): the constant
+                        ones-minus-identity matrix (no gradient; nothing is
+                        ever frozen then). 0<a<1: (1-a)*full + a*learnable
+                        (nothing is frozen then either).
         current=True  : only the still-unresolved square sub-block (rows and
-                        columns of unfrozen nodes). Shape (m, m), m may be 0.
-                        This is what the sparsity penalty is computed on.
+                        columns of unfrozen nodes), always taken from the
+                        learnable matrix. Shape (m, m), m may be 0. This is
+                        what the sparsity penalty is computed on (inactive
+                        while the mode is "full").
         """
         adj = self.adj_mat(soft)
         if current:
             keep = self._unfrozen().to(adj.device)
             return adj[keep][:, keep]
+        a = self.order_blend
+        if a < 1.0:
+            n = adj.shape[0]
+            full = torch.ones(n, n, device=adj.device) - torch.eye(n, device=adj.device)
+            return full if a <= 0.0 else (1.0 - a) * full + a * adj
         return self.sure_mask * self.sure_adj + (1 - self.sure_mask) * adj
 
     @torch.no_grad()
@@ -434,8 +496,11 @@ class M1Prior(nn.Module):
     def find_sinks_and_fix(self) -> bool:
         """
         Apply the heuristic once, unconditionally (kept for direct use).
-        Returns True iff every content node is now frozen.
+        Returns True iff every content node is now frozen. Does nothing
+        (returns False) while the order blend is below 1.
         """
+        if self.order_mode != ORDER_TRIL:
+            return False
         self._freeze_zero_columns()
         return len(self._unfrozen()) == 0
 
@@ -445,8 +510,11 @@ class M1Prior(nn.Module):
         The sink-check gate; call once at the END of every epoch (the model
         does it when the Trainer asks for the end-of-epoch scheduling).
         See the module docstring for the two modes. Epochs are 1-based.
+        Does nothing while the order blend is below 1.
         """
         res = GateResult()
+        if self.order_mode != ORDER_TRIL:
+            return res
         keep = self._unfrozen()
         if len(keep) == 0:
             return res
@@ -483,12 +551,21 @@ class M1Prior(nn.Module):
         return res
 
     def schedule_state(self) -> dict:
-        """Non-learnable gate state (plain python). sure_mask / sure_adj are
-        buffers and are saved with the model's state_dict."""
-        return self.gate.state_dict()
+        """Non-learnable state (plain python): the gate and the order blend.
+        sure_mask / sure_adj are buffers and are saved with the model's
+        state_dict."""
+        return {"gate": self.gate.state_dict(), "order_blend": self.order_blend}
 
     def load_schedule_state(self, s: dict) -> None:
-        self.gate.load_state_dict(s)
+        if "gate" in s:
+            self.gate.load_state_dict(s["gate"])
+            if "order_blend" in s:
+                self.set_order_blend(s["order_blend"])
+            else:  # state written with the two-valued order mode
+                self.set_order_mode(s.get("order_mode", ORDER_TRIL))
+        else:  # checkpoint written before the order mode existed: gate dict only
+            self.gate.load_state_dict(s)
+            self.set_order_blend(1.0)
 
     # ---------------- prior parameters ----------------
     def _clamp(self, lv: torch.Tensor) -> torch.Tensor:
@@ -505,8 +582,11 @@ class M1Prior(nn.Module):
         Returns dict
             prior_mean   (B, D)  content: f_i(parents), style: mu_j^{(r)}
             prior_logvar (B, D)  log-variances (clamped)
-            adj          (nc, nc) full hard adjacency (straight-through grad)
-            current_adj  (m, m)   unresolved sub-block, for the sparsity loss
+            adj          (nc, nc) adjacency used now: hard lower-triangular
+                         (straight-through grad) at blend 1, constant
+                         ones-minus-identity at blend 0, the mix between
+            current_adj  (m, m)   unresolved sub-block of the learnable
+                         matrix, for the sparsity loss
         """
         cfg, nc = self.cfg, self.n_content
         B = z.shape[0]
@@ -568,7 +648,7 @@ class M1Net(nn.Module):
             prior_mean, prior_logvar (B, D)
             log_q        (B,)  log q(z|x), summed over D
             log_p        (B,)  log p(z|y,t,e), summed over D
-            adj          (nc, nc)  hard adjacency (straight-through)
+            adj          (nc, nc)  adjacency used now (see M1Prior.forward)
             current_adj  (m, m)    unresolved block (sparsity penalty)
         """
         h = self.head(x, sample=sample)
@@ -599,6 +679,22 @@ class M1Net(nn.Module):
     def gate_end_epoch(self, epoch: int) -> GateResult:
         """Delegates to M1Prior.gate_end_epoch (the model calls this)."""
         return self.prior.gate_end_epoch(epoch)
+
+    def set_order_blend(self, a: float) -> None:
+        """Delegates to M1Prior.set_order_blend (the model calls this)."""
+        self.prior.set_order_blend(a)
+
+    def set_order_mode(self, mode: str) -> None:
+        """Delegates to M1Prior.set_order_mode."""
+        self.prior.set_order_mode(mode)
+
+    @property
+    def order_blend(self) -> float:
+        return self.prior.order_blend
+
+    @property
+    def order_mode(self) -> str:
+        return self.prior.order_mode
 
     def schedule_state(self) -> dict:
         return self.prior.schedule_state()
@@ -634,8 +730,11 @@ if __name__ == "__main__":
     B = 16
     x = torch.randn(B, 32, 16, 16)
     y, t, e = (torch.randint(0, n, (B,)) for n in (10, 2, 3))
-    out = net(x, y, t, e)
-    for k, v in out.items():
-        print(f"{k:13s}{tuple(v.shape)}")
+    for a in (0.0, 0.5, 1.0):
+        net.set_order_blend(a)
+        out = net(x, y, t, e)
+        print(f"--- order blend {a} ({net.order_mode}): adj row sums {out['adj'].sum(1).tolist()}")
+        for k, v in out.items():
+            print(f"{k:13s}{tuple(v.shape)}")
     out["x_hat"].sum().backward()
     print("gate, epoch 1:", net.gate_end_epoch(1))
