@@ -74,9 +74,13 @@ config and inconsistent with the $29$M Table~1 figure -- and separately notes th
 describes $1\times1,3\times3,1\times1$; the authors' reply states the released weights are ``a slightly
 different version of the network described in the paper for internal reasons'' with unchanged conclusions,
 without specifying what else differs. Two things are independently verifiable directly from the code,
-however, regardless of that reply: (i) the model is dimension-preserving, checked in
-\cref{app:irevnet:walkthrough}; (ii) it is genuinely bijective and not the padded/injective variant, checked
+however, regardless of that reply: 
+\begin{enumerate*}[label=(\roman*)]
+\item the model is dimension-preserving, checked in
+\cref{app:irevnet:walkthrough}; 
+\item it is genuinely bijective and not the padded/injective variant, checked
 next.
+\end{enumerate*}
 
 \textbf{Bijective, not injective, confirmed from the channel schedule.} \texttt{irevnet\_block.\_\_init\_\_}
 sets \texttt{self.pad = 2*out\_ch - in\_ch}, and only invokes \texttt{injective\_pad} (zero-padding extra

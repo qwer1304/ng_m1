@@ -1,11 +1,14 @@
-\section{Pseudo-injective estimation: replacing the flow head with a regularized VAE}
+\section{Pseudo-injective estimation: an attempt for an injective mixing 
+\texorpdfstring{$g$}{g} with a regularized VAE}
 \label{sec:pseudoinj}
 
 \Cref{sec:flow} proposed a flow head to get an exactly invertible $g$.
 It was abandoned before implementation: an exactly invertible map cannot reduce dimension
 (\cref{sec:flow:motivation}), so a square injective flow head is structurally the wrong shape for M1, 
-which needs roughly ten output latents, not a $150{,}528$-dimensional one. This section proposes what 
-replaces it: not an exact diffeomorphism, but a pair of networks -- a frozen, pretrained backbone and a 
+which needs roughly ten output latents, not a $150{,}528$-dimensional one.
+\footnote{$224\times224\times3$} 
+This section proposes what replaces it: not an exact diffeomorphism, but a pair of networks -- a 
+frozen, pretrained backbone and a 
 trainable head -- each carrying an explicit, measurable regularizer that keeps them \emph{close to} 
 \textbf{injective}, while actually reducing dimension the way \nameref{sec:archB} does. 
 We first restate the problem this is meant to solve, then the alternatives that were considered and set 
@@ -21,7 +24,7 @@ backbone), \texttt{head.py} (trainable head), \texttt{losses.py} (all loss terms
 
 \subsection{The problem this section answers}
 \label{sec:pseudoinj:problem}
-\Cref{sec:archB:gap} already states the gap in \nameref{sec:archB} plainly: a frozen ResNet-50 is
+\Cref{sec:arch} already states the gap in \nameref{sec:archA} and \nameref{sec:archB} plainly: a frozen ResNet-50 is
 provably non-injective (any pooling convnet is), so nothing constrains $\mathrm{BB}\circ g^{-1}$ to be
 injective, differentiable, or otherwise well-behaved, and the gap is \emph{unexamined} -- nothing in the
 pipeline measures how bad it is. \Cref{sec:flow} closed that gap exactly, at the cost of being unable to
@@ -73,8 +76,19 @@ with the linear-probe diagnostic of \cref{app:probe} (species accuracy plus with
 accuracy) before it is used, exactly as \cref{sec:pretrain} already requires for the ResNet-50 case; none
 of them is used or discussed further in this note.
 
-\textbf{Why IN-VAE (the REPA-E-style baseline) \cite{leng2025repae} is the default here.} It is trained on plain reconstruction
-(plus generic perceptual/adversarial terms), with no alignment or semantic-shaping loss pulling it toward
+\textbf{Why IN-VAE (the REPA-E-style baseline) \cite{leng2025repae} is the default here.} It is 
+trained on plain reconstruction (plus KL, MSE, LPIPS and GAN terms),
+\footnote{The terms:
+\begin{itemize}[topsep=0pt]
+\item Learned Perceptual Image Patch Similarity (LPIPS). Instead of comparing pixels, it passes $x$ 
+   and $\hat x$ through a fixed pretrained network (VGG or AlexNet) and compares their intermediate 
+   features. This penalizes differences in texture and structure that MSE tolerates, so 
+   reconstructions look less blurry.
+\item GAN (adversarial). A discriminator, usually patch-based, learns to tell real images from 
+   reconstructions. The decoder is rewarded for fooling it, which sharpens fine detail.
+\end{itemize}
+}
+with no alignment or semantic-shaping loss pulling it toward
 discarding style/location information; its embedding width ($8192$, i.e.\ $32\times16\times16$) is
 comparable to the other non-flagged candidates; and it needs no bespoke training code, only a frozen
 forward pass -- the same iteration-speed argument \cref{sec:archB} already makes for a frozen backbone.
@@ -119,27 +133,32 @@ different objects.
 \item The \emph{injective} loss (INJ) acts on the \emph{encoder side}. For pairs of inputs in a
       minibatch whose geodesic distance is above $5\%$ of the batch maximum (and whose latent distance
       is nonzero) it looks at the ratio $r=\lVert z_i-z_j\rVert/d_{\mathrm{geo}}(x_i,x_j)$ and penalizes
-      $\mathrm{relu}(\log 0.3-\log r)+5\,\mathrm{relu}(r-1)$, averaged over pairs. That is, it keeps
+      $\mathrm{ReLU}(\log 0.3-\log r)+5\,\mathrm{ReLU}(r-1)$, averaged over pairs. That is, it keeps
       latent distances between $0.3$ and $1$ times the geodesic distances of the inputs: distinct
       inputs cannot collapse to one latent (lower bound), nor be stretched apart (upper bound). The
       geodesic distances are estimated once by an Isomap-style shortest-path computation
       (\cref{sec:pseudoinj:gotchas}). The paper's Theorem~1 gives a separation criterion; the loss
       implemented is the released \texttt{InjectiveLoss}.
-\item The \emph{bi-Lipschitz} term (BILIP) acts on the \emph{decoder side} and uses no geodesic table.
+\item The \emph{bi-Lipschitz} regularization term (BILIP) acts on the \emph{decoder side} and uses 
+      no geodesic table.
       With $J=\partial\,\mathrm{decode}/\partial z$ and $G=J^\top J$ (the $D\times D$ pulled-back
-      metric), it penalizes the off-diagonal entries of $G$ (latent directions should stay orthogonal
-      in feature space) and the diagonal entries above an upper bound $L=2$ (squared hinge). There is
-      no lower-bound term (BLAE uses $0$). The Jacobian is computed by forward-mode differentiation on
-      a random fraction ($0.3$) of the batch. The paper argues (its Theorems~3-4) that this relaxation
-      is admissible at $O(n)$ latent dimensions, where a hard embedding guarantee would need
-      $O(k^2)$.
-\footnote{According to the Nash embedding theorem \cite{nash1956}, a $k$-dimensional compact 
-Riemannian manifold requires a latent dimension of $O(k^2)$ to guarantee an isometric embedding
-(distance preserving); the required latent dimension $n$ satisfies 
+      metric), it penalizes the off-diagonal entries of $G$ (latent directions should stay 
+      orthogonal in feature space) and the diagonal entries above an upper bound $L=2$ (squared 
+      hinge). There is no lower-bound term (BLAE uses $0$). The Jacobian is computed by forward-mode 
+      differentiation on a random fraction ($0.3$) of the batch. 
+      The paper argues \cite[Theorem 4]{zhan2026blae} that the relaxation 
+      \cite[Definition 4]{zhan2026blae} and 
+      the resulting regularization is \emph{admissible} \cite[Definition 3]{zhan2026blae} with a 
+      latent dimension $n=O(k)$, linear in the intrinsic dimension $k$ of the data manifold
+      $(k \leq n \leq 2k)$, whereas a hard isometric-embedding guarantee needs $n=O(k^2)$.
+\footnote{According to the Cartan-Janet theorem \cite{burstin1931,cartan1927,janet1926} and the 
+Nash embedding theorem \cite{nash1956}, a $k$-dimensional compact 
+Riemannian manifold requires a latent dimension $n$ of $O(k^2)$ to guarantee an isometric embedding
+(distance preserving); this latent dimension must satisfy 
 $\frac{k(k+1)}{2} \le n \le \frac{k(3k+11)}{2}$.}
 \end{itemize}
 This is a \emph{trained regularizer}, not a proof of injectivity, and it is unproven at ImageNet 
-scale: the paper's own experiments are Swiss Roll, dSprites, MNIST, CIFAR-10, Bird, and Teapot.
+scale: the paper's own experiments are Swiss Roll, dSprites, MNIST, CIFAR-10, Bird, and Teapot.\\
 
 \textbf{What is reusable from the released repository, and what is not.} The repository's dataset-
 specific autoencoder classes are toy-sized and toyishly-implemented (latent dims $2$--$16$, small 
@@ -215,7 +234,8 @@ approximate, weighted use is sufficient.
        here $\tilde x$ is the spatial IN-VAE latent mean, a $32\times16\times16$ tensor, not a pooled 
        ResNet vector.
 %-----------------
-\item \textbf{Trainable head} (\texttt{head.py}). A \emph{fresh, untrained} instance of Hugging Face's
+\item \textbf{Trainable head} (\texttt{head.py}). A \emph{fresh, untrained} instance of Hugging 
+      Face's \linebreak
       \texttt{diffusers.AutoencoderKL} \cite{aekl} (not a pretrained checkpoint), 
       used \emph{unmodified} -- rather 
       than editing its \texttt{quant\_conv} and \texttt{post\_quant\_conv} internals, two small 
@@ -281,6 +301,39 @@ approximate, weighted use is sufficient.
       statements about a deterministic map -- the reparameterization noise must not enter these
       terms). The geodesic-distance table (\texttt{GeoD}), needed only by the injective loss, is
       built once from the cached IN-VAE embeddings of the training-location images.
+      
+      It might appear at the first glance that BLAE is redundant since the model already includes
+      the reconstruction loss (which is also done in IN-VAE).
+      The short picture is that reconstruction loss pushes toward injectivity, but only weakly. How 
+      weakly depends on the bottleneck, and the head's bottleneck is very tight.
+      \begin{itemize}
+      \item \textbf{Why IN-VAE gets away without BLAE.} Its latent is 8192 numbers for a 256
+         $\times$256 image, so reconstruction can be nearly lossless. Almost nothing has to be 
+         merged, and reconstruction alone keeps it close to invertible.
+      \item \textbf{Why the head is different.} The head compresses 8192 numbers (really 64 inside 
+        the AutoencoderKL) down to about 10. At that size, perfect reconstruction is impossible. 
+        Three things then work against injectivity:
+        \begin{enumerate}
+	    \item \textbf{Merging cheap directions.} Reconstruction (MSE) only penalizes what is 
+	       expensive to lose. Subtle directions, such as faint camera or location cues, cost little 
+	       in MSE, so the head can collapse them, and those are exactly the directions the style 
+	       block needs.
+        \item \textbf{The KL term.} It pulls the posterior toward the prior, which actively rewards 
+           merging inputs. Reconstruction pushes against it, but nothing sets a floor on how much 
+           stays separated.
+		\item \textbf{No control on the inverse.} Reconstruction says nothing about how 
+		   well-conditioned the decoder is, and the theory needs a smooth inverse, not just a 
+		   one-to-one map.
+		\end{enumerate}
+		\item \textbf{What BLAE adds.} INJ sets an explicit floor, so latent distances can't fall 
+		   below 0.3 of the input geodesic distances. BILIP keeps the decoder's metric 
+		   well-conditioned.
+		\item \textbf{Honest caveat.} BLAE is a hedge, not a proven need. It is untested at this 
+		   scale and untested together with a KL term, as the note already says. If the first runs 
+		   show distinct inputs staying apart without it, you could set \texttt{lambda\_inj} and 
+		   \texttt{lambda\_bilip} to 0 and drop it. Cheap check: compare the latent-to-geodesic 
+		   distance ratio on held-out pairs with and without INJ.
+		\end{itemize}
 \end{enumerate}
 The resulting per-image loss, replacing \texttt{Trainer.step} of \cref{app:code} on the head side:
 \begin{equation}
@@ -322,7 +375,8 @@ This is genuinely better: instead of an unknown, unbounded gap, the deviation he
 be measured after the fact, for example by the fraction of held-out pairs whose ratio falls outside the
 band. The regularizers themselves do not report that gap during training.
 
-It is not a proof of injectivity, and \cref{thm:ng}'s hypothesis -- $g$ an exact $C^2$ diffeomorphism onto
+It is not a proof of injectivity, and \cref{thm:ng}'s hypothesis -- $g$ an exact $\mathrm{C}^2$ 
+diffeomorphism onto
 its image -- is still, strictly, violated by both IN-VAE and the head, in exactly the same
 \emph{category} of gap \cref{sec:archB:gap} already names for plain Option B. The honest claim is:
 \textbf{bounded and diagnosable distortion, not solved injectivity.} This should be stated exactly this
@@ -388,13 +442,14 @@ its own gap without softening it.
             cheaper).
       \item \emph{Pairwise-distance step}, $O(N^2d')$ time. Naive broadcasting would try to materialize an
             $N\times N\times d$ tensor ($\sim\!10$TB at $N=18\mathrm{k}$, $d=8192$) -- infeasible. The
-            code uses the Gram identity $\|x-y\|^2=\|x\|^2+\|y\|^2-2x^\top y$ in row chunks (one matmul per
-            chunk, peak memory $O(\mathrm{chunk}\cdot N)$, on GPU if available), keeps the $k$ nearest
+            code uses the Gram identity $\|x-y\|^2=\|x\|^2+\|y\|^2-2x^\top y$ in row chunks (one 
+            $\mathrm{matmul}$ per chunk, peak memory \linebreak
+            $O(N \cdot \mathrm{chunk})$, on GPU if available), keeps the $k$ nearest
             neighbours of each point, and symmetrizes the graph. Float32 cancellation gives edge lengths
             accurate to about $10^{-3}$, irrelevant for a regularizer. If the $k$-NN graph is
             disconnected, $k$ is doubled up to a maximum and the step repeated; if it is still
             disconnected an error is raised, since geodesic distances are infinite between components.
-      \item \emph{All-pairs shortest-path step}, $O(S(E+N\log N))$ for $S$ sources and $E\sim Nk$
+      \item \emph{All-pairs shortest-path step}, $O(S(E+N\log N))$ for $S$ sources and $E\approx Nk$
             edges: Dijkstra from each source over the sparse graph, sharded across worker processes
             (embarrassingly parallel). The weights are non-negative, so plain Dijkstra is the right
             choice; Johnson's algorithm exists for negative weights and has no advantage here.

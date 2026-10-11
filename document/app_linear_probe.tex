@@ -49,9 +49,9 @@ Two separate probes are needed because content and style are different questions
       a backbone using only train-location data; L100 stays reserved for evaluating the eventual M1
       pipeline, consistent with its role everywhere else in this note.
 \item \textbf{Within L38/L43/L46, use stratified $k$-fold cross-validation}
-	\footnote{``Stratified jointly by species and location" means the folds are built to preserve in 
+	\footnote{``Stratified jointly by species and location'' means the folds are built to preserve in 
 	each fold the proportions of each species$\times$location combination in the full dataset, so every 
-	fold has a representative slice of, say, ``raccoon at L43" and not just ``raccoon" in general. That 
+	fold has a representative slice of, say, ``raccoon at L43'' and not just ``raccoon'' in general. That 
 	matters specifically for the within-species location probe: since it's scored per species, you need 
 	each species to have reasonable location coverage in every fold, or some folds simply can't produce 
 	a meaningful location accuracy for the rarer species.}

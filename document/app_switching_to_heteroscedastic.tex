@@ -31,8 +31,9 @@ coincide there.
 \end{itemize}
 
 \subsection{Effect on the budget}
-For the content block with $K_C=20$ values, condition (a) of \cref{prop:m1req} requires $L_c+1\le20$.
-\Cref{tab:hnm} compares the two models for the content graphs of \cref{tab:examples}.
+For the content block with $K_C=20$ values, condition \labelcref{item:Lc} of \cref{prop:m1req} 
+requires $L_c+1\le20$. \Cref{tab:hnm} compares the two models for the content graphs of 
+\cref{tab:examples}.
 
 \begin{table}[ht]
 \centering
@@ -57,12 +58,17 @@ chain, 5 nodes                     & 5 & 1 (1) & 25 & 26 & no & no\\
 \item \textbf{Fit the ANM first.} Use the prior of \cref{sec:use}: the content scale depends on $c=(y,t)$, the
       style scale on $r=(t,e)$, and neither depends on parent values.
 \item \textbf{Diagnose ANM misspecification.} Three checks, all heuristic.
-      (a) Compare the held-out ELBO of the ANM with that of an HNM prior whose scale depends on the estimated
-      parents; a more flexible model always fits at least as well on the training data, so use held-out data or
-      a penalty.
-      (b) Within each cell $(y,t)$, regress the squared residuals of each estimated content latent on the
-      estimated values of its parents; a clear dependence indicates parent-dependent scale.
-      (c) Check whether the recovered graph is stable across random seeds and between the two priors.
+      \begin{enumerate*}[label=(\alph*)]
+      \item Compare the held-out ELBO of the ANM with that of an HNM prior whose scale depends on 
+         the estimated
+         parents; a more flexible model always fits at least as well on the training data, so use 
+         held-out data or a penalty.
+      \item Within each cell $(y,t)$, regress the squared residuals of each estimated content latent 
+         on the estimated values of its parents; a clear dependence indicates parent-dependent 
+         scale.
+      \item Check whether the recovered graph is stable across random seeds and between the two 
+         priors.
+      \end{enumerate*}      
 \item \textbf{Switch only if needed and affordable.} Move to the HNM if the HNM is clearly better in step 2 and
       the budget allows it, i.e.\ $L_{\mathrm{HNM}}+1\le K_C$ for the chosen content graph
       (\cref{tab:hnm}); otherwise keep the ANM, or reduce $n_c$ so that the HNM fits.

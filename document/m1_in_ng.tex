@@ -3,8 +3,8 @@
 
 \subsection{Environments}
 An environment is a triple $u=(c,e)=(y,t,e)$; its observed distribution is
-$p^{(u)}(x)=p(x\mid y,t,e)$, which is available because all three indices are observed. In this
-indexing
+$p^{(u)}(x)=p(x\mid y,t,e)$, which is available at training because all three indices are observed. 
+In this indexing
 \begin{center}
 \begin{tabular}{@{}lll@{}}
 \toprule
@@ -16,14 +16,17 @@ style $Z_s$ & $r=(t,e)$ & $\mu_j^{(r)},\ \sigma_{s,j}^{(r)}$ (isolated nodes)\\
 \end{tabular}
 \end{center}
 so M1 is an instance of the process in \cref{sec:ng} with a particular pattern of which mechanisms
-change: the same DAG $\G=\Gc\,\cup\,\{\text{isolated nodes}\}$ in all environments, Gaussian noise for
-every latent, and $g$ shared.
+change: the same DAG $\G=\Gc\,\cup\,\{\text{isolated style nodes}\}$ in all environments, Gaussian 
+noise for every latent, and $g$ shared.
 
 \subsection{Block structure of the sufficient-change vectors}
 Given $u=(y,t,e)$,
 \[
-\log p^{(u)}(z)=\log p(z_c\mid c)+\sum_{j=1}^{n_s}\log p^{(r)}(z_{s,j}),\qquad c=(y,t),\ r=(t,e).
+\log p^{(u)}(z)=\log p(z_c\mid c)+\sum_{j=1}^{n_s}\log p^{(r)}(z_{s,j}),\footnotemark \qquad c=(y,t),\ r=(t,e).
 \]
+\footnotetext{The distribution of $\log p^{(r)}(z_s)$ decomposes into a sum of individual latents 
+because of \cref{eq:style} and the assumption that the noise variables are mutually independent 
+(within an image, and across images).}%
 Hence all cross derivatives between the blocks vanish, the Markov network is $\Mk_c$ (the network of
 $\Gc$) plus isolated nodes, and every ancestral set is $Z'=Z'_c\cup Z'_s$. The vector splits:
 \begin{equation}
@@ -36,7 +39,7 @@ An isolated node is a sink with no edges. It is excluded from every third-order 
 \cref{eq:w}, so a style latent contributes exactly two entries, its first and second derivative. If
 all style latents are in $Z'$, then $|\vect b|=2n_s$. The two blocks are functions of different parts of $u$,
 but both depend on the time of day: $\vect w_c$ on $c=(y,t)$ and $\vect b$ on $r=(t,e)$.
-
+\newpage
 \subsection{What \texorpdfstring{\cref{thm:ng}}{Theorem~\ref*{thm:ng}} of Ng et al. gives for M1}
 The graph $\G$ is recovered up to isomorphism. Every style latent has no parents, hence \linebreak
 \mbox{$\sur(Z_{s,j};\G)=\varnothing$}, so each estimated style latent is a component-wise (invertible)
@@ -48,10 +51,10 @@ parents, all of which lie in the content block. Consequently:
 This is the property that makes transfer to an unseen location possible (see \cref{sec:use}).
 Note that what partial disentanglement (nonempty $\sur(Z_i)$) actually costs you is in interpretability 
 of individual latents (you can't point to ``this coordinate = leg length''), not predictive usability. 
-The content/style split is the property you need for prediction to work at all (style drops out), and 
-that one is clean regardless of $\sur(Z_i)$ (see \cref{sec:apply}).
+The content/style split is the property you need for prediction to work at all in unseen domains 
+(style drops out), and that one is clean regardless of $\sur(Z_i)$ (see \cref{sec:apply}).
 
-\subsection{Requirements on the environments}
+\subsection{Requirements on the number of environments}
 \label{sec:reqs}
 Let $L_c$ be the number of entries of $\vect w_c$ for the full content block, computed in
 \cref{prop:count} below, and $L_s=2n_s$.

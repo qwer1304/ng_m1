@@ -6,7 +6,7 @@ For an environment $u=(y,t,e)$, write $c(u)=(y,t)\in\Cset$ and $r(u)=(t,e)\in\Rs
 determines. The latent vector for an image from environment $u$ is $Z^u=(Z_c^u,Z_s^u)$ with
 $Z_c^u\in\R^{n_c}$ (`content'), $Z_s^u\in\R^{n_s}$ (`style'), $n=n_c+n_s$, and the image is
 $X^u\in\R^{d}$. Note that Ng et al. assume $p^{(u)}_Z$ is third-order differentiable and 
-\emph{has full support on $\R^n$}.The data are generated as follows.
+\emph{has full support on $\R^n$}. The data are generated as follows.
 \begin{align}
 X^u &= g(Z_c^u,Z_s^u), \label{eq:mixing}\\
 Z_{c,i}^u &= f_i^{c(u)}\bigl(\PA(Z_{c,i}^u;\Gc)\bigr) + \varepsilon_{c,i}^u,
@@ -37,9 +37,10 @@ changes only through $c(u)$ or $r(u)$, never through $u$ as a whole; this is the
       equations \eqref{eq:mixing}--\eqref{eq:style}, and is used only for prediction
       (\cref{sec:use}).
 \end{enumerate}
-The latent DAG over $Z^u$ is $\Gc$ together with $n_s$ isolated nodes (the style latents), the same DAG
-for every $u$. The time of day $T$ enters both blocks: it is part of $c(u)$, which indexes the content
-mechanisms, and part of $r(u)$, which indexes the style distributions.
+The latent DAG over $Z^u$ is $\Gc$ together with $n_s$ isolated nodes (the style latents), the same 
+DAG (but not the same mechanisms!) for every $u$. The time of day $T$ enters both blocks: it is part 
+of $c(u)$, which indexes the content mechanisms, and part of $r(u)$, which indexes the style 
+distributions.
 \end{definition}
 
 \Cref{fig:m1} shows the model.
@@ -163,21 +164,22 @@ mechanisms, and part of $r(u)$, which indexes the style distributions.
 
 \end{tikzpicture}
 \caption{\textbf{The M1 model, in plate notation.} The large box is the sample plate: one copy of
-$(Y,T,e,Z_c^u,Z_s^u,X^u)$ per image, replicated over $u=(y,t,e)$. The two small boxes above and below
-are parameter plates, replicated over the content cell $c=(y,t)$ and the style cell $r=(t,e)$
+$(Y,T,e,Z_c^u,Z_s^u,X^u)$ per image, replicated over $u=(y,t,e)$. The two small boxes above and 
+below are parameter plates, replicated over the content cell $c=(y,t)$ and the style cell $r=(t,e)$,
 respectively; nothing inside them carries a sample index. The arrow from a parameter plate into the
-sample plate is selected by that \textbf{same} image's own $(y,t)$ or $(t,e)$, as labelled (note that
-$t$ is \textbf{shared}). Objects with no plate around them -- the DAG structure $\Gc$ and the mixing
-$g$ -- are shared by every sample and every cell.
-The dashed arrows are not part of the structural equations \eqref{eq:mixing}--\eqref{eq:style}: they
+sample plate is selected by that \textbf{same} image's own $(y,t)$ or $(t,e)$, as labeled (note 
+that $t$ is \textbf{shared}). Objects with no plate around them -- the DAG structure $\Gc$ and the 
+mixing $g$ -- are shared by every sample and every cell.
+The dashed arrows are not part of the structural equations 
+\labelcref{eq:mixing,eq:content,eq:style}: they
 record the location-specific label prior of \labelcref{item:P4}, used only at prediction time
-(\cref{sec:use}). $Y$ is unobserved and $T$ can be either observed or unobserved. The four content latents and their edges are only an illustration: the number of
+(\cref{sec:use}). At test time $Y$ is unobserved and $T$ can be either observed or unobserved. 
+The four content latents and their edges are only an illustration: the number of
 content latents and their DAG are unknown.}
 \label{fig:m1}
 \end{figure}
-%\vspace{-3em}
 \paragraph{Rationale.}
-\footnotetext{In an implementation, $\mu_{c,i}^{(c)}$ can be absorbed into $f_i^{(c)}$}.
+\footnotetext{In an implementation, $\mu_{c,i}^{(c)}$ can be absorbed into $f_i^{(c)}$.}
 \begin{itemize}[leftmargin=1.5em]
 \item \textbf{Invariance is placed where it is plausible.} Species and time of day produce animal
       appearance through a mechanism that should not depend on the camera site, so $p(z_c\mid c)$ and

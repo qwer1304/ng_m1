@@ -3,7 +3,7 @@
 
 We restate what is needed from \cite{ng2025}. For each environment $u\in[m]$ there is a latent vector
 $Z^u=(Z_1^u,\dots,Z_n^u)$ and an observation $X^u=g(Z^u)$, with $g$ a $\mathrm{C}^2$ 
-\textbf{\textit{diffeomorphism onto its image ((injective, smooth, smooth inverse)}}, shared by all environments. Each coordinate satisfies
+\textbf{\textit{diffeomorphism onto its image (injective, smooth, smooth inverse)}}, shared by all environments. Each coordinate satisfies
 $Z_i^u=f_i^{(u)}(\PA(Z_i^u;\G_Z))+\epsilon_i^{(u)}$ with $\epsilon_i^u$ Gaussian (additive noise
 model, ANM; the meaning of $\epsilon_i^{(u)}$ is discussed in \cref{app:eps}), where the same unknown
 DAG $\G_Z$ holds in every environment and the mechanisms $f_i^{(u)}$ may change arbitrarily with
@@ -17,7 +17,7 @@ that follows the above data generating process, and generates a data distributio
 distribution of the observed random variables $X$ across the given environments, i.e. 
 (\cite[Equation 2]{ng2025}), 
 \begin{equation}
-p^{(u)}_{\hat X}(x) = p^{(u)}_X(x),\ \forall u \in [m],\ x \in X^{(u)},
+p^{(u)}_{\hat X}(x) = p^{(u)}_X(x),\ \forall u \in [m],\ x \in \mathcal{X}^{(u)},
 \label{eq:obs_equiv}
 \end{equation}
 where $\hat Z$ denote the estimated latent variables and $\hat X = \hat{g}(\hat Z)$. In this case, 
@@ -25,8 +25,8 @@ the models $(\hat g, p_{\hat Z}, \G_{\hat Z})$ and $(g, p_Z, \G_Z)$ are said to 
 \textit{observationally equivalent}.
 
 \subsection{Graph notions}
-The \emph{Markov network} $\Mk_Z$ has an edge $\{Z_i,Z_j\}$ iff
-$Z_i\not\perp Z_j\mid Z_{[n]\setminus\{i,j\}}$, equivalently iff \linebreak
+The \emph{Markov network} $\Mk_Z$ has an edge $\{Z_i,Z_j\}$ \ifft \ 
+$Z_i\not\perp Z_j\mid Z_{[n]\setminus\{i,j\}}$, equivalently \ifft \linebreak
 $\partial^2\log p^{(u)}(Z)/\partial Z_i\partial Z_j\not\equiv0$ for some $u$; under faithfulness it is
 the moral graph of $\G_Z$. Write $\mathcal{E}(\Mk_Z)$ for its edge set, $\Delta(\Mk_Z)$ for its 
 set of triangles and $\deg_{\Mk_Z}(v)$ for the degree of a node. 
@@ -37,7 +37,8 @@ The \emph{surrounding parents} of $Z_i$ are
 
 \subsection{Sufficient-change vectors}
 For a set $Z'$ of latents that contains all of its own ancestors (an \emph{ancestral} set), with
-$n'=|Z'|$, let $\G_{Z'}$ be the induced DAG, $\Mk_{Z'}$ its Markov network, and define
+$n'=|Z'|$, let $\G_{Z'}$ be the induced DAG, $\Mk_{Z'}$ its Markov network, $\oplus$ the vector 
+concatenation symbol and define
 \begin{align}
 \vect\tau(Z',u) &= \Bigl(\tfrac{\partial\log p^{(u)}(Z')}{\partial Z_i}\Bigr)_{Z_i\in Z'}
 \oplus\Bigl(\tfrac{\partial^2\log p^{(u)}(Z')}{\partial Z_i^2}\Bigr)_{Z_i\in Z'}
@@ -68,11 +69,14 @@ independent.
 
 \begin{theorem}[Identifiability with latent ANMs, \cite{ng2025}]\label{thm:ng}
 Under the data generating process above, \cref{as:1,as:2} and faithfulness, Algorithm~1 of 
-\cite{ng2025}, which is required to find an \textit{observationally equivalent} model of the data
-generating process, returns $(\hat{\G},\hat Z)$ such that, for some permutation $\pi$ of the estimated 
-latents, (i) $\hat{\G}_\pi$ and $\G_Z$ are identical, and 
-(ii) each $\hat Z_{\pi(i)}$ is solely a function of a subset of
+\cite{ng2025}, which is required to find an \textit{observationally equivalent} \cref{eq:obs_equiv}  
+model of the data generating process, returns $(\hat{\G},\hat Z)$ such that, for some permutation 
+$\pi$ of the estimated latents, 
+\begin{enumerate*}[label=(\roman*)]
+\item $\hat{\G}_\pi$ and $\G_Z$ are identical, and 
+\item each $\hat Z_{\pi(i)}$ is solely a function of a subset of
 $\{Z_i\}\cup\sur(Z_i;\G_Z)$.
+\end{enumerate*}
 \end{theorem}
 
 The role of the third derivatives is to identify sink nodes: for a sink $Z_i$ with \textit{Gaussian}
@@ -83,24 +87,27 @@ Without further assumptions nonlinear ICA and hence CRL are not identifiable \ci
 the environments supply the needed variation. The Markov-network stage alone is the result of
 \cite{zhang2024}, which yields identification only up to mixing with ``intimate neighbors''.
 
-Algorithm~1 requires learning $(\hat g^t, p^t_{\hat Z}, \G^t_{\hat Z})$ where $t$ is the iteration 
-index under additional constraints to achieve \cref{eq:obs_equiv} -- observational equivalence. 
+Algorithm~1 requires learning $(\hat g^t, p^t_{\hat Z}, \G^t_{\hat Z})$, where $t$ is the iteration 
+index, under additional constraints to achieve \cref{eq:obs_equiv} -- observational equivalence. 
 They propose to use a VAE to that end with additional regularization terms. 
 
 \subsection{Gaussianity assumptions in ANM}
-Ng et al. assume Gaussianity in two places: (i) In their theory exogenous noise terms and (ii) in the implementation of the VAE where all distributions that need to be specified (encoder, decoder, prior) are assumed Gaussian.
-
+Ng et al. assume Gaussianity in two places: 
+\begin{enumerate*}[label=(\roman*)]
+\item In their theory exogenous noise terms and 
+\item in the implementation of the VAE where all distributions that need to be specified (encoder, decoder, prior) are assumed Gaussian.
+\end{enumerate*}
 \begin{itemize}
 \item \textit{In the theory}: Gaussianity of the exogenous noise is used for exactly one purpose -- the 
 sink-detection property. For a sink $Z_i$ under Gaussian noise, $\log p(Z_i\mid\text{parents})$ is 
 quadratic in $Z_i$, so $\partial^3\log p/\partial Z_i^2\partial Z_j=0$ for all $j$ (ANM case). This 
-vanishing is what lets Algorithm~1 identify sinks via third-derivative tests and peel them off one at a 
-time. It's genuinely Gaussian-specific (quadratic log-density $\Leftrightarrow$ Gaussian) -- no other 
-noise family gives this cleanly. Nothing else in Assumptions~1/2 (the linear-independence conditions) 
-needs Gaussianity per se; they're stated generically in terms of derivatives of $\log p^{(u)}$.
-
-\item \textit{In the implementation}: Only one of the three Gaussian choices actually follows from the 
-theory:
+vanishing is what lets Algorithm~1 identify sinks via third-derivative tests and peel them off one 
+at a time. It's genuinely Gaussian-specific (quadratic log-density $\Leftrightarrow$ Gaussian) -- no 
+other noise family gives this cleanly. Nothing else in \cref{as:1,as:2}
+(the linear-independence conditions) needs Gaussianity per se; they're stated generically in terms 
+of derivatives of $\log p^{(u)}$.
+\item \textit{In the implementation}: Only one of the three Gaussian choices actually follows from 
+the theory:
 \begin{itemize}
 \item \textbf{Prior over $\hat Z$} (\texttt{mean/logvar} nets, ANM structure) -- follows from the 
 theory. This is the direct implementation of the Gaussian exogenous-noise assumption, and it's what the 

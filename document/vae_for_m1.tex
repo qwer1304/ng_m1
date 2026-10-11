@@ -1,6 +1,23 @@
 \section{VAE architecture for M1: end-to-end vs.\ split backbone+head}
 \label{sec:arch}
 
+\begin{center}
+\fbox{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{%
+\textbf{Note: neither option below implements an injective $g$.}
+\Cref{thm:ng} requires the mixing $g$ to be a $\mathrm{C}^2$ diffeomorphism onto
+its image, in particular injective. Neither \nameref{sec:archA} nor
+\nameref{sec:archB} implements this, and neither even attempts to. Both use a
+convolutional backbone with pooling, which is generically non-injective, and
+both use a separately parameterized encoder and decoder that are tied together
+only by the reconstruction term, not by any constraint that makes the decoder an
+inverse of the encoder. Nothing in their losses bounds, encourages or measures
+injectivity. \Cref{sec:pseudoinj} is the attempt to do something about this: it
+adds explicit regularizers that keep the pipeline close to injective while still
+reducing dimension. Even there the result is only approximate and diagnosable,
+not an exact diffeomorphism, so the hypothesis of \cref{thm:ng} is still not
+met strictly.}}
+\end{center}
+
 \Cref{sec:use} sketches the M1 prior and loss abstractly, on top of whatever encoder/decoder
 produces $\hat Z$ from $X$. \Cref{thm:ng} and the propositions built on it in this note are stated for
 exactly one generative object: $X=g(Z)$, with $X$ the actual observed image and $g$ the true, unknown
@@ -44,7 +61,7 @@ with no intermediate object substituted in. \Cref{fig:optA} shows the flow.
 %\node[procnode] (xhat) at (12.1,0 |- dec.east) {$\hat x$};
 
 \node[smallnode] (meannet) at (5.6,0.9) {%
-  \begin{tabular}{@{}c@{}} mean\_net \\ (adj-masked $z$) \end{tabular}};
+  \begin{tabular}{@{}c@{}} mean\_net \\ (adj-masked $\hat z$) \end{tabular}};
 \node[obsnode] (u) at (8.6,0 |- meannet.east) {$u$};
 \node[smallnode] (logvarnet) at (10.6,0 |- u.east) {%
   \begin{tabular}{@{}c@{}} log\_var\_net \\ (domain $u$) \end{tabular}};
@@ -57,7 +74,7 @@ with no intermediate object substituted in. \Cref{fig:optA} shows the flow.
 \draw[->] (enc) -- (z);
 \draw[->] (z) -- node[right] {$\hat z$} (dec);
 %\draw[->] (dec) -- (xhat);
-\draw[->] (z) -- (meannet);
+\draw[->] (z) -- node[right, xshift=2mm] {$\hat z$} (meannet);
 \draw[->] (u) -- (logvarnet);
 \draw[->] (meannet) -- (loss);
 \draw[->] (logvarnet) -- (loss);
@@ -390,17 +407,21 @@ objective actively works against keeping the style signal the style block needs.
 All four train invariance to a shared, standard augmentation recipe -- random-resized crop, color
 jitter, occasional grayscale, Gaussian blur, horizontal flip -- rather than invariance to a fixed
 label set. What differs between them is the loss and the negative-pair mechanics (InfoNCE with a
-large batch for SimCLR; a momentum encoder plus a memory queue for MoCo v2; a momentum encoder plus a
-predictor without a memory queue for MoCo v3; a predictor with stop-gradient and no negatives at all
-for SimSiam), which mainly affects training stability and representation quality for the downstream
-discriminative task, not \emph{which} low-level factors get suppressed. So there is no a priori
-reason to expect any one of the four to retain systematically more or less location/style information
-than the others. Two caveats, both empirical rather than settled by the choice of method: (a) color
-jitter and blur do push toward suppressing some of the brightness/exposure cues that matter for
-time-of-day/style in TI, less aggressively than a labeled cross-entropy objective but not zero; (b)
-none of the four ever see location or time-of-day labels during pretraining, so whatever style signal
-survives is incidental to the augmentation recipe, not something the objective was built to preserve.
-
+large batch for SimCLR; a momentum encoder plus a memory queue for MoCo v2; a momentum encoder plus 
+a predictor without a memory queue for MoCo v3; a predictor with stop-gradient and no negatives at 
+all for SimSiam), which mainly affects training stability and representation quality for the 
+downstream discriminative task, not \emph{which} low-level factors get suppressed. So there is no a 
+priori reason to expect any one of the four to retain systematically more or less location/style 
+information than the others. Two caveats, both empirical rather than settled by the choice of 
+method: 
+\begin{enumerate*}[label=(\alph*)]
+\item color jitter and blur do push toward suppressing some of the brightness/exposure cues that 
+matter for time-of-day/style in TI, less aggressively than a labeled cross-entropy objective but not 
+zero; 
+\item none of the four ever see location or time-of-day labels during pretraining, so whatever style 
+signal survives is incidental to the augmentation recipe, not something the objective was built to 
+preserve.
+\end{enumerate*}
 \paragraph{Recommendation.}
 Prefer self-supervised pretraining over supervised, generically, since supervised is the one option
 whose objective actively works against what M1 needs. Among SimCLR, MoCo v2, MoCo v3 and SimSiam

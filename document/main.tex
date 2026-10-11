@@ -4,7 +4,7 @@
 \usepackage[T1]{fontenc}
 \usepackage{amsmath,amssymb,amsthm,mathtools}
 \usepackage{booktabs}
-\usepackage{enumitem}
+\usepackage[inline]{enumitem}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
 
@@ -52,18 +52,22 @@
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\Nn}{\mathcal{N}}
 \newcommand{\vect}[1]{\boldsymbol{#1}}
+\newcommand{\ifft}{\emph{iff}}
 
 \title{Applying Ng et al. general-environment causal representation learning
 to camera-trap domain generalization:\\
-model, assumptions and environment requirements}
+model, assumptions, environment requirements and implementation}
 \author{}
 \date{}
 
 \begin{document}
 \maketitle
 % must come after \maketitle which resets the counter
-\setcounter{footnote}{1} % skip first symbol
-\renewcommand{\thefootnote}{\fnsymbol{footnote}} % switch fn marks to symbols
+%\setcounter{footnote}{1} % skip first symbol
+\renewcommand{\thefootnote}{\roman{footnote}} % switch fn marks to symbols
+\makeatletter
+\renewcommand{\@makefnmark}{\hbox{\@textsuperscript{\normalfont\@thefnmark}\hspace{0.3em}}}
+\makeatother
 \input{abstract}
 
 \tableofcontents
@@ -88,6 +92,7 @@ model, assumptions and environment requirements}
 \input{estimate_unseen_locs}
 
 % =====================================================================
+\newpage
 \input{vae_for_m1}
 
 % =====================================================================

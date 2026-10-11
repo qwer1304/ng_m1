@@ -1,7 +1,6 @@
 \section{Estimation and use at an unseen location}
 \label{sec:use}
 
-\paragraph{Prediction at an unseen location.}
 Algorithm~1 of \cite{ng2025} applies with environments $u=(y,t,e)$. A VAE with a shared encoder and
 decoder is trained on all environments. The prior over $\hat Z_c$ is a Gaussian ANM whose mechanism
 parameters are conditioned on $c=(y,t)$ (for instance through embeddings of $y$ and $t$), and the prior over
@@ -21,6 +20,7 @@ $$
 p(c\mid x^\ast,e^\ast) = p(c\mid z_c,z_s,e^\ast) = p(y,t\mid z_c,z_s,e^\ast) =
 p(y\mid t,z_c,z_s,e^\ast)p(t\mid z_c,z_s,e^\ast).
 $$
+\newpage
 Two cases exist: Time of day observed or unobserved at test time.
 \begin{itemize}
 \item \emph{Time of day observed at test time.} Since $Z_s$ is independent of $(Y,Z_c)$
@@ -31,7 +31,7 @@ Two cases exist: Time of day observed or unobserved at test time.
 	p(y\mid z_c,t,e^\ast)\ \propto\ p^{e^\ast}(y\mid t^\ast)\,p(z_c\mid y,t^\ast),
 	\label{eq:predict}
 	\end{equation}
-	so the style latents drop out exactly and only the content latents are used.
+	so the style latents drop out exactly and only the content latents control $y$.
 	Hence, the species $y$ can be inferred from maximizing the likelihood-prior product over $y$ for 
 	the given $t^\ast$.
 	The factor $p(z_c\mid y,t^\ast)$ is invariant by \labelcref{item:P2}.
