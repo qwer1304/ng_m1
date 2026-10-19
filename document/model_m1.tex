@@ -5,8 +5,11 @@
 For an environment $u=(y,t,e)$, write $c(u)=(y,t)\in\Cset$ and $r(u)=(t,e)\in\Rset$ for the two cells it
 determines. The latent vector for an image from environment $u$ is $Z^u=(Z_c^u,Z_s^u)$ with
 $Z_c^u\in\R^{n_c}$ (`content'), $Z_s^u\in\R^{n_s}$ (`style'), $n=n_c+n_s$, and the image is
-$X^u\in\R^{d}$. Note that Ng et al. assume $p^{(u)}_Z$ is third-order differentiable and 
-\emph{has full support on $\R^n$}. The data are generated as follows.
+$X^u\in\mathcal{X}\subseteq\R^{d}$. Note that Ng et al. assume $p^{(u)}_Z$ is third-order 
+differentiable and \emph{has full support on $\R^n$}. 
+\footnote{See \cref{app:support} for what they use this assumption for and what must be done
+to relax it.}
+The data are generated as follows.
 \begin{align}
 X^u &= g(Z_c^u,Z_s^u), \label{eq:mixing}\\
 Z_{c,i}^u &= f_i^{c(u)}\bigl(\PA(Z_{c,i}^u;\Gc)\bigr) + \varepsilon_{c,i}^u,
@@ -14,7 +17,7 @@ Z_{c,i}^u &= f_i^{c(u)}\bigl(\PA(Z_{c,i}^u;\Gc)\bigr) + \varepsilon_{c,i}^u,
 \quad i=1,\dots,n_c, \label{eq:content}\\
 Z_{s,j}^u &= \varepsilon_{s,j}^u,
 \qquad \varepsilon_{s,j}^u\sim\Nn\bigl(\mu_{j}^{r(u)},(\sigma_{s,j}^{r(u)})^2\bigr),
-\quad j=1,\dots,n_s, \label{eq:style}
+\quad j=1,\dots,n_s. \label{eq:style}
 \end{align}
 Here $\Gc$ is an unknown DAG over the content latents, $g$ is an unknown mixing function, and the noise
 variables are mutually independent (within an image, and across images). Neither $\Gc$ nor $g$ carries

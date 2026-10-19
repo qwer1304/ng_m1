@@ -11,7 +11,7 @@ THE TREE
 =======================================================================
   RunConfig
     loss      LossConfig     target weights, per-loss ramps, REC plateau test,
-                             KL settle test, BLAE hyper-parameters
+                             BLAE hyper-parameters
     gate      GateConfig     sink-check gate (mode, check_epoch, W/cap table)
     schedule  ScheduleRules  the global, cross-loss rules (caps, run control)
                              and the global on/off switch
@@ -27,10 +27,9 @@ it and are set by RunConfig.finalize(), whatever the user wrote there:
     loss.schedule = schedule.enabled
     gate.mode     = "stable" if schedule.enabled else "clock"
 So "disabled" means: every loss uses its target weight from epoch 1, the
-adjacency is lower-triangular from epoch 1, the sink check runs on the fixed
-clock (every gate.check_epoch epochs), there are no caps and no fine-tune
-phase, and the run stops only at max_epochs. (The probe is independent of
-this switch.)
+sink check runs on the fixed clock (every gate.check_epoch epochs), there
+are no caps and no fine-tune phase, and the run stops only at max_epochs.
+(The probe is independent of this switch.)
 
 =======================================================================
 HOW VALUES ARRIVE (main.py)
@@ -57,6 +56,9 @@ from typing import Any, List, Optional, Tuple
 # ======================================================================
 # Losses
 # ======================================================================
+BILIP_VARIANTS = ("bi-lipschitz", "bi-lipschitz_dec")
+
+
 @dataclass
 class LossConfig:
     """
@@ -69,21 +71,31 @@ class LossConfig:
       kl_init_frac        KL weight before its ramp starts, fraction of target
       kl_ramp_epochs, sparse_ramp_epochs, moral_ramp_epochs, bilip_ramp_epochs
       plateau_window, plateau_tol    REC plateau test (REC owns the detector)
-      settle_window, settle_tol      KL settle test (KL owns the detector):
-                          the (validation, else train) epoch-mean KL has
-                          changed by less than settle_tol (relative) between
-                          settle_window epochs ago and now, counting from
-                          the last reset (the switch of the adjacency to
-                          lower-triangular). KL is noisier than REC, hence
-                          separate numbers.
     schedule              DERIVED from ScheduleRules.enabled by finalize().
     BLAE hyper-parameters:
       inj_thresh          lower ratio bound of the injective loss (0.3)
-      bilip_L             upper bound on diag of the pulled-back metric (2.0)
+      bilip_variant       which decoder regularizer BILIP computes. The names
+                          are the reg_grad values of the released BLAE code:
+                            "bi-lipschitz"      penalize the off-diagonal of
+                                G = J^T J and the diagonal of G above bilip_L
+                                (no lower bound). This is what the released
+                                swiss_roll.ipynb calls.
+                            "bi-lipschitz_dec"  Eq. 12 of the BLAE paper:
+                                relu(1/kappa - smin)^2 + relu(smax - kappa)^2
+                                on the singular values of J, kappa = bilip_L.
+                          The choice between them is the user's.
+      bilip_L             "bi-lipschitz": L, the cap on diag(G).
+                          "bi-lipschitz_dec": kappa, the singular values of J
+                          are kept in [1/kappa, kappa] (so kappa >= 1).
+                          The two numbers are not on the same scale: with G
+                          diagonal, diag(G) <= L means smax <= sqrt(L).
       bilip_subset_frac   fraction of batch for the Jacobian (0.3)
     Values from Ng's toy code: lambda_kl=1, lambda_rec=10, lambda_sparse=0.01.
     lambda_inj=0.1 and lambda_bilip=1e-4 are starting guesses (no published
-    anchor); lambda_moral=0 for the first runs.
+    anchor); lambda_moral=0 for the first runs. (BLAE's own weights for its
+    Swiss Roll run are 1 for INJ and 0.3 for BILIP, other datasets 2 to 30
+    and 0.1; ours are far lower, the gradient-scale probe is the tool to
+    check them.)
     """
 
     lambda_kl: float = 1.0
@@ -99,10 +111,9 @@ class LossConfig:
     bilip_ramp_epochs: int = 20
     plateau_window: int = 5
     plateau_tol: float = 0.01
-    settle_window: int = 5
-    settle_tol: float = 0.02
     schedule: bool = True  # derived
     inj_thresh: float = 0.3
+    bilip_variant: str = "bi-lipschitz"  # or "bi-lipschitz_dec"; user's choice
     bilip_L: float = 2.0
     bilip_subset_frac: float = 0.3  # BLAE paper text says 10%; unresolved
 
@@ -119,10 +130,15 @@ class LossConfig:
             raise ValueError("kl_init_frac must be in [0, 1].")
         if self.plateau_window < 1 or self.plateau_tol <= 0:
             raise ValueError("need plateau_window >= 1 and plateau_tol > 0.")
-        if self.settle_window < 1 or self.settle_tol <= 0:
-            raise ValueError("need settle_window >= 1 and settle_tol > 0.")
         if not 0.0 < self.bilip_subset_frac <= 1.0:
             raise ValueError("bilip_subset_frac must be in (0, 1].")
+        if self.bilip_variant not in BILIP_VARIANTS:
+            raise ValueError(f"bilip_variant must be one of {BILIP_VARIANTS}.")
+        if self.bilip_L <= 0:
+            raise ValueError("bilip_L must be > 0.")
+        if self.bilip_variant == "bi-lipschitz_dec" and self.bilip_L < 1:
+            raise ValueError("bilip_L (kappa) must be >= 1 for bi-lipschitz_dec "
+                             "(otherwise 1/kappa > kappa and the bounds conflict).")
 
 
 # ======================================================================
@@ -195,14 +211,6 @@ class ScheduleRules:
                      warning saying so.
     bilip_cap        BILIP waits for the REC plateau at most this many
                      epochs, then starts anyway, with a warning.
-    tril_ramp_epochs when KL is ready, the adjacency is blended from the
-                     full off-diagonal mask to the lower-triangular one,
-                     a = 0 -> 1 linearly over this many epochs (<= 0: switch
-                     at once). No jump in the prior, hence none in the
-                     gradients Adam has to follow.
-    tril_cap         once the blend has reached 1, SPARSE waits for the KL
-                     settle test at most this many epochs, then starts
-                     anyway, with a warning.
     rec_frac         fraction of the trivial REC baseline used at the KL cap.
     gate_open_frac   the sink-check gate is held off until SPARSE's weight
                      reaches this fraction of its target (quick hack: the
@@ -218,18 +226,14 @@ class ScheduleRules:
     enabled: bool = True
     kl_cap: int = 30
     bilip_cap: int = 60
-    tril_ramp_epochs: int = 10
-    tril_cap: int = 60
     rec_frac: float = 0.5
     gate_open_frac: float = 0.5
     max_epochs: int = 250
     finetune_epochs: int = 20
 
     def validate(self) -> None:
-        if self.kl_cap < 1 or self.bilip_cap < 1 or self.tril_cap < 1:
-            raise ValueError("kl_cap, bilip_cap and tril_cap must be >= 1.")
-        if self.tril_ramp_epochs < 0:
-            raise ValueError("tril_ramp_epochs must be >= 0.")
+        if self.kl_cap < 1 or self.bilip_cap < 1:
+            raise ValueError("kl_cap and bilip_cap must be >= 1.")
         if not 0.0 < self.rec_frac <= 1.0:
             raise ValueError("rec_frac must be in (0, 1].")
         if not 0.0 <= self.gate_open_frac <= 1.0:
@@ -405,16 +409,15 @@ if __name__ == "__main__":
     c2 = RunConfig.from_dict(json.loads(json.dumps(c.to_dict()))).finalize()
     assert c2.to_dict() == c.to_dict()
     assert RunConfig().finalize().gate.mode == "stable"
-    c3 = RunConfig().with_overrides(["loss.settle_window=7", "loss.settle_tol=0.05",
-                                     "schedule.tril_cap=33"]).finalize()
-    assert c3.loss.settle_window == 7 and c3.loss.settle_tol == 0.05
-    assert c3.schedule.tril_cap == 33
-    assert RunConfig().finalize().schedule.tril_ramp_epochs == 10
-    assert RunConfig().with_overrides(["schedule.tril_ramp_epochs=0"]).finalize().schedule.tril_ramp_epochs == 0
+    assert RunConfig().finalize().loss.bilip_variant == "bi-lipschitz"
+    c3 = RunConfig().with_overrides(
+        ["loss.bilip_variant=bi-lipschitz_dec", "loss.bilip_L=1.5"]).finalize()
+    assert c3.loss.bilip_variant == "bi-lipschitz_dec" and c3.loss.bilip_L == 1.5
     for bad in (["nope.x=1"], ["loss.nope=1"], ["schedule.rec_frac=2"],
                 ["probe.band_lo=20"], ["probe.n_batches=0"], ["probe.target=0"],
-                ["loss.settle_window=0"], ["loss.settle_tol=0"],
-                ["schedule.tril_cap=0"], ["schedule.tril_ramp_epochs=-1"]):
+                ["loss.bilip_variant=nope"],
+                ["loss.bilip_variant=bi-lipschitz_dec", "loss.bilip_L=0.5"],
+                ["loss.bilip_L=0"]):
         try:
             RunConfig().with_overrides(bad).finalize()
         except (KeyError, ValueError):

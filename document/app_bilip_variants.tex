@@ -1,0 +1,201 @@
+\section{The BILIP variants: the author's equivalence claim, its analysis, and
+consequences for M1}
+\label{app:bilip}
+
+This appendix records what is known about the two decoder regularizers that can serve
+as BILIP (\cref{sec:pseudoinj:blae}), what the BLAE author said about them, how his
+equivalence claim can be read, and what follows for M1. Each statement is one of
+three
+kinds: \emph{verified} (read in the paper or in the released code), \emph{stated} (by
+the author, in correspondence of October 2026), or \emph{reasoning} (mine, from the
+theory and the code; not tested, and not claimed by the authors).
+
+\textbf{Note:} In the following $g$ denotes the mixing function of the \emph{head}.
+
+\subsection{What is established about the variants}
+\label{app:bilip:facts}
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{Verified, paper.} The paper defines one bi-Lipschitz regularizer,
+Eq.~(12)
+      of \cite{zhan2026blae},
+      \[
+      \mathbb{E}\left[\left(\mathrm{ReLU}\left(\tfrac{1}{\kappa}-\sigma_{\min}\right)\right)^2
+      +\left(\mathrm{ReLU}\left(\sigma_{\max}-\kappa\right)\right)^2\right],
+      \]
+      on the singular values of the decoder Jacobian $J$. Its theory (admissibility,
+      embedding dimension $n=O(k)$) is stated for this loss.
+\item \emph{Verified, code.} The released code has several \texttt{reg\_grad}
+      branches. \texttt{bi-lipschitz\_dec} is Eq.~(12). The default,
+      \texttt{bi-lipschitz}, penalizes the off-diagonal entries of $G=J^\top J$ and
+      the diagonal entries above $L$, and multiplies its lower-bound term by $0$.
+      The encoder branches use a \texttt{tangent\_spaces} attribute that is never
+      set, so they cannot run as released.
+\item \emph{Verified, notebook.} The released \texttt{swiss\_roll.ipynb}, and an
+      earlier version of it, both call \texttt{bi-lipschitz} with \texttt{lam\_grad}
+      $=0.3$, \texttt{lam\_geo} $=1$, \texttt{L} $=1$, \texttt{thresh} $=0.3$. These
+      are the values of the Swiss Roll column in \cite[Table~3]{zhan2026blae}.
+      ($\lambda_{\text{bi-Lip}}=0.3$, $\lambda_{\mathrm{reg}}=1$, $\kappa=1$,
+      $\epsilon=0.3$). The BLAE panel of the earlier notebook looks the same, by eye,
+      as that of \cite[Figure~3]{zhan2026blae}.
+\item \emph{Stated.} The author describes the four branches as follows:
+      \texttt{bi-lipschitz} regularizes $J^\top J$ (off-diagonal to zero, diagonal
+      capped at $L$); \texttt{bi-lipschitz\_dec} keeps the singular values of the
+      decoder Jacobian in $[1/L,L]$; the encoder variant \texttt{bi-lipschitz\_enc} does the same 
+      for the encoder Jacobian on the tangent space of the data manifold; 
+      the \texttt{bi-lipschitz\_enc+dec} variant constrains only the largest singular value, of 
+      both. He states that the paper's experiments use \texttt{bi-lipschitz\_dec}, and that 
+      ``theoretically, these four variants are equivalent if 
+      $\mathrm{dec}\circ\mathrm{enc}=\mathrm{identity}$ and orthogonal transformations are 
+      ignored''; he also claims that empirically \texttt{bi-lipschitz\_dec}
+      is used because it works best.
+\item \emph{Open.} The notebook and the author's statement point to different
+      variants for the Swiss Roll figure. This is not reconciled. It is not known
+      which variant produced Figure~3, nor which one the other datasets used.
+\end{itemize}
+
+\subsection{The author's equivalence claim}
+\label{app:bilip:claim}
+
+\paragraph{Why encoder and decoder constraints coincide (reasoning).}
+If $\mathrm{dec}\circ\mathrm{enc}$ is the identity on the data manifold, the chain
+rule gives $J_{\mathrm{dec}}J_{\mathrm{enc}}=I$ on the tangent space of the manifold.
+On that subspace $J_{\mathrm{dec}}$ is the inverse of $J_{\mathrm{enc}}$, so its
+singular values are the reciprocals of those of $J_{\mathrm{enc}}$. The interval
+$[1/\kappa,\kappa]$ is mapped to itself by taking reciprocals, hence ``all singular
+values of the decoder lie in $[1/\kappa,\kappa]$'' and ``all singular values of the
+encoder lie in $[1/\kappa,\kappa]$'' say the same thing. Likewise
+$\sigma_{\max}(J_{\mathrm{dec}})\le\kappa$ is the same statement as
+$\sigma_{\min}(J_{\mathrm{enc}})\ge1/\kappa$. This is why capping only the maximum,
+for
+both maps, is enough in the \texttt{enc+dec} variant.
+
+\paragraph{What ``orthogonal transformations are ignored'' means (reasoning).}
+Singular values are unchanged by orthogonal maps: $\sigma(QJR)=\sigma(J)$ for
+orthogonal
+$Q$ (output space) and $R$ (latent space). Being $\kappa$-bi-Lipschitz is also
+unchanged, since rotations are isometries. The loss of \cite[Eq.~(12)]{zhan2026blae} therefore 
+cannot tell a latent space from the same latent space with rotated axes, and the set of its
+minimizers is closed under such rotations. The default variant behaves differently. Under a
+latent rotation $G=J^\top J$ becomes $R^\top GR$, so its off-diagonal penalty is zero
+only when the latent axes are aligned with the principal axes of the metric.
+
+\paragraph{Why rotations can be ignored for BLAE (reasoning).}
+BLAE aims at preserving the geometry of the manifold, and geometry does not depend on
+the choice of basis of the latent space: any rotated embedding is as good as any
+other. If the rotation of the latent axes may be chosen freely, $G$ can always be
+diagonalized, its diagonal is then $\sigma^2$, and the default variant reduces to a
+condition on the singular values ($\mathrm{diag}(G)\le L$ means $\sigma_{\max}\le
+\sqrt{L}$). In that sense the variants agree.
+
+\paragraph{Where the claim does not carry over (reasoning, from the code).}
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{The lower bound.} In the code the lower-bound term of \texttt{bi-lipschitz} is 
+      multiplied by $0$.
+\footnote{Note that there's a commented out line which lower-bounds the diagonal to $1/L$.}
+      That variant constrains stretching, not collapse, so it
+      is not equivalent to the two-sided loss even up to rotation, and the author's
+      description (``stretched or compressed'') does not match it.
+\item \emph{Directions the data do not occupy.} Denote $k,\ n$ the intrinsic and the estimated
+      latent dimensions, respectively. $\mathrm{dec}\circ\mathrm{enc}=
+      \mathrm{id}$ fixes $J_{\mathrm{dec}}$ only on the $k$ directions along the
+      encoded manifold. When $n>k$ the other $n-k$ columns are unconstrained by
+      reconstruction, while the decoder-side loss still constrains them
+      (\cref{app:bilip:m1}).
+\footnote{
+$\mathrm{dec} \circ \mathrm{enc} = \mathrm{id}$ fixes $J_{\mathrm{dec}}$ only on the $k$ directions 
+along the encoded manifold:
+\begin{enumerate}[nosep]
+\item Let $\Mk$ be the data manifold. Its dimension is $k$, unknown to us but fixed by nature.
+\item If $\mathrm{dec}(\mathrm{enc}(x)) = x$ for all $x$ in $\Mk$, differentiate along any curve in
+$\Mk$. For every tangent vector $v$ at $x$, $J_{\mathrm{dec}} \cdot J_{\mathrm{enc}} \cdot v = v$.
+\item The vectors $J_{\mathrm{enc}} \cdot v$ fill a $k$-dimensional subspace of the latent space $\R^n$, the 
+tangent space of the encoded manifold at that point. On that subspace the equation pins down 
+$J_{\mathrm{dec}}$. On its orthogonal complement, of dimension $n-k$, the equation says nothing.
+\end{enumerate}
+}
+\item \emph{A fixed basis.} The claim is up to a rotation of the latent axes. M1 does
+not
+      allow one (\cref{app:bilip:m1}).
+\end{itemize}
+
+\subsection{Consequences for M1}
+\label{app:bilip:m1}
+
+\paragraph{The basis (reasoning).}
+The identifiability result of \cite{ng2025} as applied to M1 promises that style latents are 
+recovered up to a coordinate-wise invertible transformation. Each content latent is recovered as a 
+function of itself and its surrounding parents.
+A coordinate-wise invertible map rescales the columns of the
+decoder Jacobian: if $\hat z_i=h_i(z_i)$, the Gram matrices satisfy
+$\hat G_{ij}=c_i c_j G_{ij}$ with $c_i=(h_i^{-1})'$ and $G$ the Gram matrix of the
+true mixing. A zero off-diagonal entry stays zero and a nonzero one stays nonzero.
+So the off-diagonal penalty of \texttt{bi-lipschitz} is met by the true latents only
+if
+the columns $\partial g/\partial z_i$ are mutually orthogonal, which nothing in M1
+guarantees for a nonlinear $g$ and causally dependent content latents. Otherwise the
+cheapest way to reduce the penalty is to mix the latents into orthogonalized
+combinations, which is what the theory says must not happen, and which competes with
+the prior (diagonal Gaussian noise, lower-triangular graph; neither is rotation
+invariant). The singular-value loss has no preferred basis, so the prior stays in
+charge
+of it. This favours \texttt{bi-lipschitz\_dec} for M1.
+
+\paragraph{Unused latent directions, $n>k$ (reasoning).}
+The note starts with more content latents than it expects to need
+(\cref{sec:schedule:general}), so there will be latent directions that no data vary
+along. The loss of \cite[Eq.~(12)]{zhan2026blae} looks at all $n$ singular values of 
+$J$ at the encoded points, hence it asks the decoder to respond, with $\sigma\ge1/\kappa$ and
+independently of the other columns, to directions the reconstruction does not need. This is
+geometrically possible, since $P=8192\gg n$, but it is at odds with the KL term,
+which pulls the posterior of an unused latent towards the prior (broad), while a decoder
+that reacts to that coordinate perturbs the reconstruction unless the posterior stays
+narrow. I expect some tension here; it is not tested. The default variant has no
+lower bound and lets the decoder ignore such directions. The paper's embedding statement
+concerns a $k$-dimensional manifold in $\R^n$; I do not see that it covers the extra
+directions, and I have not checked this further. Ng et al.\ assume that the number of
+latents is the true one, so extra latents are outside their theory in any case.
+
+\paragraph{Scale (reasoning).}
+Both variants impose an absolute scale on the decoder through $L$ or $\kappa$. The
+default $2$ is a guess, it is not on the same scale in the two variants, and it may
+conflict with the scale of the IN-VAE latents. The gradient-scale probe
+(\cref{sec:schedule:gradlog}) is the tool to check the weight. The weight itself
+($10^{-4}$) is far below the paper's ($0.1$ to $0.3$), so at that value the choice of
+variant may matter little.
+
+\paragraph{What is implemented.}
+Both variants are in \texttt{losses.py}, selected by \texttt{loss.bilip\_variant}
+(\cref{sec:schedule:bilipcfg}); the choice is the user's, the configuration default
+is
+\texttt{bi-lipschitz}. The Eq.~(12) variant takes both extremes from one
+\texttt{svdvals} call, where the released code makes two calls that each compute all
+singular values.
+
+\subsection{Checks that would settle the open points}
+\label{app:bilip:checks}
+\begin{itemize}[leftmargin=1.5em]
+\item The singular-value spectrum of $J$ at $\hat\mu$ over training. Values pinned at
+      $1/\kappa$ point to forced directions, values near $\kappa$ to a scale
+      conflict.
+\item The posterior variance of each latent, to identify unused latents, and a run
+      with a smaller $n_c$ for comparison.
+\item An ablation with the BILIP weight set to $0$, on a toy case and on TI, to see
+      whether the term does anything. Nothing here shows that it does on the Swiss
+      Roll, a flat manifold on which injectivity and reconstruction may already
+      suffice.
+\item The latent-to-geodesic ratio on held-out pairs, and the stability of the
+learned
+      graph and of the latents across seeds and under reweighting of the training
+      locations, for each variant.
+\item The question to the author whether Figure~3 was produced by the released
+notebook
+      as it stands (\texttt{bi-lipschitz}) or with \texttt{bi-lipschitz\_dec}.
+\end{itemize}
+
+\subsection{Status}
+\label{app:bilip:status}
+Nothing in this appendix has been run on TI data, and the torch code of both variants
+is
+untested. The statements marked as reasoning are arguments, not results. The account
+of
+the author's claim is my reconstruction; he did not give a derivation.

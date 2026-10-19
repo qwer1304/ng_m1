@@ -76,8 +76,8 @@ The division of authority is strict.
       of \cref{sec:reqs} if necessary, and scale down only if runtime or accuracy
       demands it. $D=n_c+n_s$ with $n_s\le2$.
 \item \textbf{Validation} is a held-out slice of the training locations, never a
-      held-out location and never L100. It is stratified by the $(y,t,e)$ cell
-      (\texttt{--val\_frac}, default $0.1$; a cell with fewer than two rows goes
+      held-out location and never a test location (e.g., L100). It is stratified by the $(y,t,e)$ 
+      cell (\texttt{val\_frac}, default $0.1$; a cell with fewer than two rows goes
       entirely to training). If synthetic images are included the split is
       \emph{not} by \texttt{src\_uuid}, so a source image and its transported copies
       can straddle the split; \texttt{main.py} prints a warning (deferred).
@@ -115,7 +115,7 @@ a real run.
 \begin{itemize}[leftmargin=1.5em]
 \item \textbf{The order is imposed before the slots mean anything.} At epoch 1 the head
       is random, so slot $i$ is not yet a particular factor of the data. Declaring
-      ``slot 0 is a root, slot $n_c-1$ may depend on everything'' at that moment means
+      ``slot 0 is a root, slot $n_c\!-\!1$ may depend on everything'' at that moment means
       that the roles are assigned by the accident of early dynamics, while the KL term
       starts to pull the posterior towards a prior that already has this asymmetric
       structure.
@@ -130,8 +130,8 @@ a real run.
 \footnote{Example with three latents.
 \begin{itemize}
 \item Let the true graph be the chain $Z_1\to Z_2\to Z_3$. 
-If the middle node $Z_2$ is placed during learning in slot 1, the model cannot use the
-edge $Z_1\to Z_2$, since it would run from a higher slot 2 to a lower slot 1. It instead
+If the middle node $Z_2$ is placed during learning in slot 1, the learned model cannot have the
+true edge $Z_1\to Z_2$, since it would run from a higher slot 2 or 3 to a lower slot 1. It instead
 fits the fork $Z_1\leftarrow Z_2\to Z_3$. The chain and the fork have the same
 skeleton and are Markov-equivalent, so with flexible mechanisms they describe the
 same distributions. The likelihood is therefore the same, the loss has no reason to
@@ -157,7 +157,7 @@ but the chain-to-fork case is not.
          it is \emph{harmful}.
       \end{enumerate}       
       A wrong order shows up as a \emph{false sink}, a node frozen although it has a
-      child (see \cref{sec:apply:falsesink}); it mostly does not show in the losses
+      child in the true DAG (see \cref{sec:apply:falsesink}); it mostly does not show in the losses
       and the run ends as \texttt{finished}. Delaying the constraint does not remove
       this, but it at least lets the order be imposed on latents that carry
       information.
@@ -207,10 +207,9 @@ The blend is part of the same chain of readiness as the losses. In order:
       $1$; at the cap SPARSE starts anyway, with a warning, and the run becomes
       suspect.
 \end{enumerate}
-The reason for step \labelcref{item:sche:sparsestart} is that the switch from the full to the lower-
-triangular 
-adjacency changes the KL estimator, so KL jumps and then relaxes. SPARSE and the gate
-must not see that transient: a gate that opens on a block that has not yet adapted
+The reason for step \labelcref{item:sche:sparsestart} is that the switch from the full to the 
+lower-triangular adjacency changes the KL estimator, so KL jumps and then relaxes. SPARSE and the 
+gate must not see that transient: a gate that opens on a block that has not yet adapted
 would call it stable for the wrong reason (cf.\ the opening rule of the gate below).
 Consequently SPARSE starts at least \texttt{tril\_ramp\_epochs} plus
 \texttt{settle\_window} epochs after KL is ready.
@@ -265,8 +264,22 @@ weight and is not part of this sum; it is a state of the prior.
 
 \subsection{The six losses and the gate}
 \label{sec:schedule:objects}
-
-\paragraph{1. REC (constant, owns the plateau test).}
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+acronym & description\\
+\midrule
+REC & Reconstruction $\tilde x\ \text{vs}\ \hat{\tilde{x}}$\\
+KL & VAE Kullback-Leibler\\
+SPARSE & DAG sparsity\\
+ & sink-check gate\\
+MORAL & DAG Morality\\
+INJ & BLAE Injectivity\\
+BILIP & BLAE bi-Lipschitzness\\
+\bottomrule
+\end{tabular}
+\end{center}
+\subsubsection{REC (constant, owns the plateau test)}
 Weight $\lambda_{\mathrm{rec}}=10$ from epoch 1, never ramped or switched off (from
 the toy setting of \cite{ngimpl}). REC is what the others wait for. Its plateau
 detector fires once the epoch-mean REC has changed by less than $1\%$ (relative)
@@ -276,7 +289,7 @@ baseline. The baseline is the trivial reconstruction error, measured once by
 \texttt{main.py} on the training rows as the variance of $x$ around its per-feature
 mean, averaged over all entries (the MSE of the best constant predictor).
 
-\paragraph{2. KL.}
+\subsubsection{KL}
 \begin{itemize}[leftmargin=1.5em]
 \item \emph{Stage A.} Weight $\texttt{kl\_init\_frac}\cdot\lambda_{\mathrm{kl}}^{\ast}$
       from epoch 1 ($10^{-3}$, a guess), so the head learns to reconstruct before the
@@ -295,7 +308,7 @@ mean, averaged over all entries (the MSE of the best constant predictor).
       SPARSE.
 \end{itemize}
 
-\paragraph{3. SPARSE.}
+\subsubsection{SPARSE}
 Starts when KL has settled after the order blend has reached $1$
 (\cref{sec:schedule:phase0}), with a $10$-epoch linear ramp from $0$ to a target of
 $0.01$ (the toy value of \cite{ngimpl}). The penalty is the sum of
@@ -305,7 +318,7 @@ subtracted, so the value is never $0$ while the block is non-empty. It is switch
 when every content node is frozen. In disabled mode it has its target weight from
 epoch 1, and $a=1$ from epoch 1.
 
-\paragraph{4. The sink-check gate.}
+\subsubsection{The sink-check gate}
 The fixed \texttt{check\_epoch} clock of \cref{app:code} is replaced by a stability
 gate.
 \begin{itemize}[leftmargin=1.5em]
@@ -354,7 +367,7 @@ $m$ (unfrozen) & $W$ & $\mathrm{cap}(m)$\\
       \texttt{check\_epoch} epochs, with no stability rule and no cap.
 \end{itemize}
 
-\paragraph{5. MORAL.}
+\subsubsection{MORAL}
 Target $0$ for the first runs, in which case it is never computed. Once a target is
 set, its ramp (10 epochs, a placeholder) starts at the first successful sink check.
 After every check that froze $f$ nodes the model snapshots the binary adjacency as the
@@ -367,22 +380,38 @@ original definition does (reweighting is deferred). The reference \texttt{prev\_
 and \texttt{k\_min} are plain attributes, not buffers, and are saved explicitly in the
 schedule state. MORAL is switched off when all nodes are frozen.
 
-\paragraph{6. INJ.}
+\subsubsection{INJ}
 The BLAE injective loss, computed on $\hat\mu$ and never on a sampled $\hat z$.
-Constant weight $0.1$ from epoch 1 (a guess, no published anchor), threshold $0.3$,
-never switched off. It needs a $(b,b)$ sub-table of the geodesic table for the
+Constant weight $0.1$ from epoch 1 (a guess, no anchor for this setting), threshold
+$0.3$, never switched off. It needs a $(b,b)$ sub-table of the geodesic table for the
 minibatch, so the trainer supplies one whenever the weight is positive.
 
-\paragraph{7. BILIP.}
+\subsubsection{BILIP}
 The BLAE decoder-Jacobian term, computed on $\hat\mu$, by far the most expensive loss
 (about $D$ decoder passes per sample on a random fraction of the batch, with the plain
-attention backend forced because the fused kernels have no forward-mode rule). It
-starts when REC has plateaued, with a cap \texttt{bilip\_cap}$=60$ epochs, after which
-it starts anyway with a warning. Linear ramp over $20$ epochs to a placeholder target
-of $10^{-4}$. Its first computed value (one epoch after the ramp starts, the first
-epoch with positive weight) is kept, so the target can be set against the real
-magnitude. Upper bound $L=2$. The subset fraction is $0.3$ in the code against $10\%$
-in the BLAE text (unresolved).
+attention backend forced because the fused kernels have no forward-mode rule). It comes
+in two variants, selected by \texttt{loss.bilip\_variant}; the choice is the user's
+(\cref{sec:pseudoinj:blae}).
+\begin{itemize}[leftmargin=1.5em]
+\item \texttt{bi-lipschitz}, the default of \texttt{config.py} and the branch the
+      released Swiss Roll notebook calls: the off-diagonal entries of $J^\top J$ are
+      pushed to $0$ and the diagonal entries are capped at $L$; no lower bound.
+\item \texttt{bi-lipschitz\_dec}, \cite[Eq.~(12)]{zhan2026blae}, which according to the
+      BLAE author is what the paper used in experiments: the singular values of $J$ are kept in
+      $[1/\kappa,\kappa]$. Both extremes come from one \texttt{torch.linalg.svdvals}
+      call on the $P\times D$ Jacobian of each row.
+\end{itemize}
+The bound is the single field \texttt{loss.bilip\_L}: it is $L$ in the first variant
+and $\kappa$ in the second (validated $\ge1$ there); the two numbers are not on the
+same scale. BILIP starts when REC has plateaued, with a cap
+\texttt{bilip\_cap}$=60$ epochs, after which it starts anyway with a warning. Linear
+ramp over $20$ epochs to a placeholder target of $10^{-4}$. This weight is a guess and
+is far below BLAE's own values (its Table~3: $0.1$ to $0.3$, on another loss scale), so
+the probe may well flag it as weak; switching the variant means re-tuning it. Its first
+computed value (one epoch after the ramp starts, the first epoch with positive weight)
+is kept, so the target can be set against the real magnitude. Default bound $2$ (as $L$
+or as $\kappa$). The subset fraction is $0.3$ in the code against $10\%$ in the BLAE
+text (unresolved).
 
 \subsection{The end-of-epoch sequence}
 \label{sec:schedule:sequence}
@@ -568,13 +597,34 @@ field & default & meaning\\
 \end{center}
 All four are validated in \texttt{config.py}, and all four are guesses.
 
+\subsection{Configuration added for the BILIP variants}
+\label{sec:schedule:bilipcfg}
+\begin{center}
+\begin{tabular}{@{}lcl@{}}
+\toprule
+field & default & meaning\\
+\midrule
+\texttt{loss.bilip\_variant} & \texttt{bi-lipschitz} & or \texttt{bi-lipschitz\_dec}; the
+user's choice\\
+\texttt{loss.bilip\_L} & 2.0 & $L$ (cap on $\mathrm{diag}(J^\top J)$) or $\kappa\ge1\ $
+(singular values in $[1/\kappa,\kappa]$)\\
+\bottomrule
+\end{tabular}
+\end{center}
+Both are validated in \texttt{config.py}; they are set from the command line like any
+other field, for example \texttt{--set loss.bilip\_variant=bi-lipschitz\_dec}. No flag of
+\texttt{main.py} is involved, and a checkpoint written before the field existed loads
+with the default.
+
 \subsection{Open items}
 \label{sec:schedule:open}
 \begin{itemize}[leftmargin=1.5em]
 \item \textbf{To confirm:} \texttt{PROBE\_SETS}; keeping the validation accuracy; the
       per-feature versus the global variance for the REC baseline; building the
       geodesic table on training rows only (which would need the ids remapped);
-      \texttt{settle\_tol}.
+      \texttt{settle\_tol}; the BILIP variant, its bound \texttt{bilip\_L} and its
+      weight (the paper and the released notebook disagree on the variant,
+      \cref{sec:pseudoinj:blae}).
 \item \textbf{Phase 0:} the KL values while $a<1$ come from a pseudo-likelihood and are
       not comparable with later ones. The first real runs should show whether the
       settle detector fires within \texttt{tril\_cap}.
@@ -600,7 +650,8 @@ All four are validated in \texttt{config.py}, and all four are guesses.
 \item \textbf{Untested:} the torch-dependent code, in this order: the smoke test
       (\texttt{python main.py --synthetic --set schedule.max\_epochs=4 --set
       loss.lambda\_inj=0}), \texttt{python m1net.py} (blend $0$, $0.5$, $1$), the
-      gate's tensor code, the loss computations, \texttt{M1Model.\_\_init\_\_}, and
+      gate's tensor code, the loss computations (both BILIP variants), 
+      \texttt{M1Model.\_\_init\_\_}, and
       one probe (\texttt{--set probe.every=1}). For a longer smoke run use small
       values, for example \texttt{--set schedule.tril\_ramp\_epochs=2 --set
       loss.settle\_window=2}, and check that the decision log shows the blend start,

@@ -1,0 +1,253 @@
+\section{Relaxing the full-support assumption}
+\label{app:support}
+
+Ng et al. \cite{ng2025} assume that $p^{(u)}_Z$ is third-order differentiable with \emph{full 
+support on $\R^n$} (\cref{sec:ng}). This appendix asks what that assumption is used for, and what 
+happens to the method, to M1 and to the implementation under two relaxations:
+\begin{description}[leftmargin=1.5em,style=nextline]
+\item[R1 (common support).] All environments share one support $S\subsetneq\R^n$, an open set.
+\item[R2 (per-environment support).] Environment $u$ has its own open support $S_u$; the $S_u$ may 
+differ.
+\end{description}
+Caveat on status: what follows is my reading of the structure of the proof of \cite{ng2025}, not a
+line-by-line check of their appendices, and every ``re-proof'' item below is a claim about what 
+would have to be checked, not a result. The places to read in \cite{ng2025} are the proofs of 
+Lemmas~1 and~2 and of Theorems~1 and~2 (Appendix~C) and the final step that turns a Jacobian statement into a statement about $h$.
+
+\subsection{What the assumption is used for in Ng et al.}
+\label{app:support:why}
+Write $h=\hat g^{-1}\circ g$ for the map from the true to the estimated latents, and $S_u$ for the support of
+$p^{(u)}_Z$. Observational equivalence (\cref{eq:obs_equiv}) and the change of variables give
+\begin{equation}
+\log p^{(u)}_Z(z)=\log p^{(u)}_{\hat Z}(h(z))+\log\bigl|\det J_h(z)\bigr|,\qquad z\in S_u.
+\label{eq:support:cov}
+\end{equation}
+The method differentiates \cref{eq:support:cov} up to third order in $z$, and uses \cref{as:2} to 
+conclude that certain entries of $J_h$ vanish. Full support is used in the following ways.
+\begin{enumerate}[label=(\alph*),leftmargin=2em]
+\item \textbf{Derivatives exist everywhere.}\label{item:supp:a} $\log p^{(u)}$ is finite and 
+      $\mathrm{C}^3$ at every $z\in\R^n$, so the sufficient-change vectors $\vect w(Z',u)$ are 
+      defined at every $z$ and for every $u$.
+\item \textbf{One domain for all environments.}\label{item:supp:b} \Cref{eq:support:cov} holds on 
+      the same set $\R^n$ for all $u$. \Cref{as:2} is stated ``at every value of $Z'$'' and needs 
+      $L+1$ environments at that value; with full support every environment is a candidate at every 
+      value, so the question of which environments are usable where never arises.
+\item \textbf{Equal supports in the estimated model.}\label{item:supp:c} Observational equivalence 
+      includes equality of the supports of $p_X^{(u)}$ and $p_{\hat X}^{(u)}$. With full support in 
+      both models this is automatic.
+\item \textbf{Local conclusion becomes global.}\label{item:supp:d} The proof concludes that the zero 
+      pattern of $J_h(z)$ holds at every $z$. Passing from ``$\partial h_i/\partial z_j\equiv 0$'' 
+      to ``$h_i$ does not depend on $z_j$'' uses that the domain is $\R^n$ (convex, connected, no 
+      holes), and the permutation $\pi$ in \cref{thm:ng} is constant because $J_h$ is continuous, 
+      invertible, with a fixed zero pattern on a connected domain.
+\item \textbf{Gaussian noise fits.}\label{item:supp:e} Gaussian noise with a continuous mechanism 
+      gives full support automatically, so the assumption costs nothing inside the model.    
+      Gaussianity is needed, as noted in \cref{sec:ng}, only for the sink property: for a sink 
+      $Z_i$, $\log p(z_i\mid\PA)$ is quadratic in $z_i$, so 
+      $\partial^3\log p/\partial z_i^2\partial z_j=0$.
+\end{enumerate}
+\cref{item:supp:a,item:supp:c} are local and survive any relaxation to open supports. 
+\cref{item:supp:b,item:supp:d} are where a relaxation costs something. 
+\cref{item:supp:e} is the one that constrains the choice of noise model.
+
+\subsection{Relaxation R1: a common support $S$}
+\label{app:support:r1}
+
+\paragraph{Assumption.} There is an open set $S\subsetneq\R^n$ such that $S_u=S$ for all $u$; $p^{(u)}_Z>0$
+and $\mathrm{C}^3$ on $S$; $g$ is a $\mathrm{C}^2$ diffeomorphism from $S$ onto its image. \Cref{as:1,as:2}
+are stated for $z\in S$. In the estimated model the support is $\hat S=h(S)$.
+
+\paragraph{What needs to be re-proved or added.}
+\begin{enumerate}[label=(R1.\arabic*),leftmargin=3em]
+\item\label{item:app:support:R1.1} \emph{The derivative identities on $S$.} \Cref{eq:support:cov} is 
+      differentiated at interior points only, so this step is unchanged. Expected: routine.
+\item\label{item:app:support:R1.2} \emph{Sink property under truncation.} Suppose $Z_i$ is a sink 
+      and, given its parents, it is a Gaussian truncated to an interval $(a_i(\PA),b_i(\PA))$ that 
+      may depend on the parents. Then in the interior
+      \[
+      \log p(z_i\mid \mathrm{pa})=-\frac{(z_i-f(\mathrm{pa}))^2}{2\sigma^2}-\log\sigma-\log 
+      N(\mathrm{pa}),
+      \]
+      where $N(\mathrm{pa})=\Phi\bigl(\tfrac{b_i-f}{\sigma}\bigr)-\Phi\bigl(\tfrac{a_i-f}{\sigma}
+      \bigr)$ is the normalizer. It depends on the parents only, so 
+      $\partial^2/\partial z_i^2=-1/\sigma^2$ and
+      $\partial^3\log p/\partial z_i^2\partial z_j=0$ still hold. Expected: easy, and it is the 
+      reason truncated Gaussian noise is the natural relaxation. Two side effects must be checked: 
+      the normalizer adds terms to the first and second derivatives with respect to the parents (so 
+      the vectors $\vect w$ change, but their length $L$ of \cref{eq:L} does not), and the 
+      general-position argument behind \cref{rem:suff} has to be redone for these vectors.
+\item\label{item:app:support:R1.3} \emph{DAG-compatible support.} The factorization 
+      $p^{(u)}(z)=\prod_k p^{(u)}(z_k\mid\PA(z_k))$ must hold with the supports included. A support 
+      such as a disc makes $z_1,z_2$ dependent through the support alone, which the fixed DAG must 
+      then explain with an edge. The clean sufficient condition is a product
+      support $S=\prod_i(a_i,b_i)$.
+      \footnote{A Cartesian product of the $n$ intervals.}
+      A non-product $S$ is allowed only if it has the sequential form
+      $z_i\in I_i(\PA(z_i))$ for the true DAG. Expected: needs to be stated as an assumption, not 
+      proved.
+\item\label{item:app:support:R1.4} \emph{Local to global.} Here the domain is $S$, not $\R^n$. Two 
+      conditions are needed: $S$ connected (so that $\pi$ and the zero pattern are constant), and 
+      every coordinate slice of $S$ connected (for example $S$ convex or a box), so that 
+      $\partial h_i/\partial z_j\equiv0$ on $S$ implies that $h_i$ does
+      not depend on $z_j$. A box $(a,b)^n$ satisfies both. Expected: easy for boxes and convex sets; 
+      for general $S$ it can fail, because $h_i$ could then differ across the disconnected slices.
+\item\label{item:app:support:R1.5} \emph{Support of the estimated model.} Equality of supports 
+      forces $\hat S=h(S)$. The estimated prior must therefore be supported on a set that the 
+      estimator can match. A Gaussian prior cannot match a bounded $S$ exactly; it matches it only 
+      in the limit of bounds so wide that the mass outside is
+      negligible. This is an estimator issue, not a proof issue.
+\end{enumerate}
+
+\paragraph{Overall judgment.} Likely and easy. The proof is local in $z$, so R1 changes the 
+\emph{domain} of the argument and not its \emph{mechanics}. The cost is a few extra hypotheses 
+(\labelcref{item:app:support:R1.3,item:app:support:R1.4}) and a modified
+estimator. Under R1 \cref{as:2} is unchanged and \cref{prop:m1req} holds as stated.
+
+\subsection{Relaxation R2: per-environment supports $S_u$}
+\label{app:support:r2}
+
+\paragraph{Assumption.} Each $S_u$ is open, $p^{(u)}_Z>0$ and $\mathrm{C}^3$ on $S_u$, the supports 
+are DAG-compatible as in \labelcref{item:app:support:R1.3}, and the DAG and $g$ are shared. Define 
+the coverage of a point,
+\[
+\mathcal U(z)=\{u:\ z\in S_u\},\qquad R_{L}=\{z:\ |\mathcal U(z)|\ge L+1\}.
+\]
+\Cref{as:2} is replaced by the \emph{local} version: for every $z\in R_L$ the vectors
+$\vect w(Z',u)-\vect w(Z',u_0)$ with $u,u_0\in\mathcal U(z)$ contain $L$ linearly independent ones. The
+quantifier order of the original is already compatible with this: the set of $L+1$ environments is chosen
+after $z$.
+
+\paragraph{What needs to be re-proved or added.}
+\begin{enumerate}[label=(R2.\arabic*),leftmargin=3em]
+\item \emph{Support matching per environment.} Observational equivalence for each $u$ gives
+      $h(S_u)=\hat S_u$. This is a consequence, not an extra assumption, and may even carry extra information
+      about $h$ (not exploited here). Expected: easy.
+\item \emph{The Jacobian structure holds on $R_L$ only.} At $z\in R_L$ the argument of R1 applies verbatim,
+      using the environments in $\mathcal U(z)$. Outside $R_L$ the argument says nothing at $z$. Expected:
+      follows from locality of the proof; to be checked that no step needs the same $L+1$ environments at two
+      different points.
+\item \emph{Gluing.} For a global statement, $R_L$ must be open, connected, and have connected coordinate
+      slices (as in R1.4). Otherwise the theorem gives a permutation $\pi$ and component-wise indeterminacies
+      per connected component of $R_L$, which need not agree. Whether the \emph{graph} can still be glued
+      across components depends on the overlaps; I do not see a general argument. Expected: the main open
+      step, and it needs an assumption.
+\item \emph{The graph is identified per region.} Since the DAG is shared, the true graph is the same
+      everywhere, but the sink test and the Markov network are read off from derivatives, which are only
+      defined on $R_L$. An edge whose cross derivative vanishes on $R_L$ (for example because the relevant
+      normalizer is locally constant) would be missed there. A condition like ``each edge is visible on every
+      component of $R_L$'' is probably needed. Expected: nontrivial.
+\item \emph{Coverage and the counts.} $L$ depends on the ancestral set $Z'$, so the coverage requirement is
+      per $Z'$ and per $z$. The number of environments needed is unchanged; what changes is that it must be
+      available \emph{locally}.
+\item \emph{Gaussian noise is excluded.} A Gaussian ANM has full support in every environment, so
+      different supports contradict it. R2 needs truncated Gaussian noise (or another family whose log-density
+      is quadratic in the interior), with environment-dependent truncation.
+\end{enumerate}
+
+\paragraph{Overall judgment.} A local theorem is plausible and probably provable with moderate effort. A
+global theorem with the same conclusion as \cref{thm:ng} needs new hypotheses on the geometry of $R_L$, and
+possibly on edge visibility, and is a research question rather than a check. The estimation side is also
+harder than for R1 (see below).
+
+\subsection{What changes in the model M1}
+\label{app:support:m1}
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{\cref{def:m1}.} Replace the remark that $p^{(u)}_Z$ has full support by a support statement.
+      Gaussian noise in \cref{eq:content,eq:style} becomes truncated Gaussian noise.
+\item \textbf{R1.} One box for the whole model: $S=S_c\times S_s$ with $S_c=\prod_i(a_i,b_i)$ and
+      $S_s=\prod_j(\alpha_j,\beta_j)$, the same for every cell. \Cref{item:P1,item:P2,item:P3,item:P4} are
+      unchanged.
+\item \textbf{R2.} The content support depends on the content cell only and the style support on the style
+      cell only, mirroring \labelcref{item:P2,item:P3}:
+      $S_u=S_c^{(c(u))}\times S_s^{(r(u))}$. This keeps the product structure between blocks, so style
+      remains independent of content given $(t,e)$. A content support that depended on the location would
+      violate \labelcref{item:P2}.
+\item \textbf{Style block.} For an isolated style latent the normalizer does not depend on $z_s$, so in the
+      interior $\vect b(z_s,r)$ is exactly the formula of \cref{sec:reqs}; the requirement on $K_R$ and the
+      collinearity condition are unchanged.
+\item \textbf{Content block.} \Cref{eq:L} is unchanged, but the normalizers of non-sink conditionals depend
+      on the parents, so the vectors $\vect a(c)$ change. \Cref{prop:m1req}\labelcref{item:Lc} stays as it is
+      under R1. Under R2 it becomes a pointwise condition,
+      \[
+      L_c\le K_C(z_c)-1,\qquad K_C(z_c)=\bigl|\{c:\ z_c\in S_c^{(c)}\}\bigr|,
+      \]
+      for every $z_c$ at which a conclusion is wanted. With about $20$ content cells and $L_c$ up to $19$ for
+      a four-node chain (\cref{tab:examples}) this leaves no slack: any region covered by fewer than all cells
+      violates it. Style needs the analogous $K_R(z_s)$. R2 is therefore realistic only for small $n_c$ or
+      for supports that overlap heavily.
+\item \textbf{Prediction (\cref{sec:use}).} The factor $p(z_c\mid y,t^\ast)$ is now a truncated density and is
+      zero outside $S_c^{(y,t^\ast)}$. A test image from a new location whose encoded $\hat z_c$ falls outside
+      the supports of all candidate species gets zero likelihood for all of them. This is a robustness cost of
+      truncation in exactly the domain-shift setting the model is built for, and needs a floor or a soft
+      boundary at prediction time.
+\end{itemize}
+
+\subsection{What changes in the implementation}
+\label{app:support:impl}
+The current code (\cref{app:code}, \texttt{m1net.py}, \texttt{losses.py}, \texttt{head.py}) uses Gaussian
+$q$ and Gaussian prior and the single-sample KL estimate $\log q-\log p$.
+
+\paragraph{R1.}
+\begin{itemize}[leftmargin=1.5em]
+\item \texttt{M1Net.forward}: replace both \texttt{Normal} log-densities by truncated-normal log-densities,
+      $\log\mathcal N(z;m,s^2)-\log\bigl(\Phi(\tfrac{b-m}{s})-\Phi(\tfrac{a-m}{s})\bigr)$. The normalizer
+      must be computed stably (for example with \texttt{torch.special.log\_ndtr} and a log-difference of
+      exponentials). For the content block $m$ is the prior mean, which depends on $z$ through the mask, so
+      gradients flow through the normalizer.
+\item The posterior must also live on $S$, otherwise $\log p=-\infty$ for samples outside it. Use a truncated
+      normal $q$ with the same box, sampled by inverse-CDF reparameterization. Alternatively keep the Gaussian
+      $q$ with a bounded transform of its sample, but then the transform must be inside the density.
+\item \texttt{head.py}: \texttt{pre\_linear} still outputs a location and a log-variance, but the location is
+      now a parameter of a truncated normal and no longer the posterior mean. The deterministic latent used by
+      the BLAE losses, by \texttt{encode\_mu} and by validation must be fixed by a decision (mean of the
+      truncated $q$ is the natural choice) and applied consistently.
+\item The box $(a,b)$ is a hyperparameter in \texttt{config.py}. It cannot be learned freely: the likelihood
+      rewards shrinking it around the data. A rule from the data (quantiles of encoded locations after phase A)
+      is the practical option.
+\item Unchanged: \texttt{NodeWiseMLP}, \texttt{ADJMatrix}, the gate, the sparsity and moral losses, the
+      optimizer split. For very wide boxes the normalizer is close to $1$ and the code behaves as it does now.
+\end{itemize}
+
+\paragraph{R2.} Everything in R1, plus:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Cell-dependent bounds.} Add networks from \texttt{content\_emb} and \texttt{style\_emb} to the
+      bounds, next to \texttt{content\_logvar\_net} and \texttt{style\_net}, with an ordering constraint
+      (for example lower bound $=$ center $-$ softplus, upper bound $=$ center $+$ softplus).
+\item \textbf{Posterior truncated to the sample's own cell.} The encoder does not see $u$, but the truncation
+      of $q$ must use the bounds of the cell of that sample, $q^{(u)}(z\mid x)$ in the notation of
+      \cite{ng2025}. This needs no change to the encoder, only to the sampling and log-density.
+\item \textbf{Bounds are circular.} Latents are learned, and the bounds are defined on the latents, and the
+      likelihood pushes every cell's bounds to the hull of its own samples. Needs a lower bound on the width, a
+      shared parametrization, or a staged estimate; cells with few images (rare species) give unreliable
+      bounds.
+\item \textbf{Do not reparametrize per environment.} Mapping each environment's support to a common box by an
+      environment-dependent bijection would absorb the difference into $g$ and break the shared mixing
+      \labelcref{item:P1}.
+\item \textbf{Diagnostics.} Log $K_C(z_c)$ and $K_R(z_s)$ over the training data (number of cells whose bounds
+      contain each encoded point) and the fraction of points near a boundary. This is a necessary condition
+      for the local \cref{as:2}, not a test of it. It could be added to the probe of \cref{sec:schedule:gradlog}
+      or logged by the trainer.
+\item \textbf{Validation accuracy} (\texttt{Trainer.validate}) evaluates $\log p(\hat\mu_c\mid y,t,e)$ for every
+      species; it must handle $-\infty$ outside the support (floor or soft boundary) or it will return
+      meaningless values on out-of-support points.
+\end{itemize}
+
+\subsection{Summary}
+\label{app:support:summary}
+\begin{center}
+\small
+\begin{tabular}{@{}p{2.6cm}p{3.6cm}p{3.6cm}p{4.2cm}@{}}
+\toprule
+ & original & R1: common $S$ & R2: per-env $S_u$\\
+\midrule
+support & $\R^n$ & open $S$, same for all $u$ & open $S_u$, differ\\
+noise & Gaussian & truncated Gaussian & truncated Gaussian, env-dependent\\
+\cref{as:2} & at every $z$ & at every $z\in S$ & at every $z\in R_L$ (local)\\
+extra hypotheses & none & connected $S$ with connected slices (box), DAG-compatible support & the same for $R_L$, plus edge visibility on each component\\
+sink test & exact & exact in the interior & exact in the interior\\
+conclusion & global & global & local, global only with extra assumptions\\
+effort & -- & easy & local: moderate; global: open\\
+M1 and estimator & as is & truncated prior and $q$, fixed box & cell-dependent bounds, circular estimation, coverage diagnostics\\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -67,8 +67,8 @@ Two cases exist: Time of day observed or unobserved at test time.
 		This assumes brightness $b$ depends on the image only through $t$ and style, not on the 
 		species content, which holds roughly unless animal coat color moves overall brightness.
 
-		The soft version still needs $p(b \mid t)$ at L100, which you take from the pooled training 
-		data. That is the same unknown style distribution as before, but one-dimensional, so a rough 
-		version is far more benign than the full style vector.
+		The soft version still needs $p(b \mid t)$ at the test domain, which you take from the 
+		pooled training data. That is the same unknown style distribution as before, but 
+		one-dimensional, so a rough version is far more benign than the full style vector.
 \end{enumerate}
 \end{itemize}

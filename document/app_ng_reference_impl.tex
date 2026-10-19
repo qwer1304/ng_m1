@@ -209,7 +209,8 @@ toy data generator rather than checked by the code.
 \subsection{Summary: what this means for building the M1 prior}
 Against the estimation sketch in \cref{sec:use}, the pieces that still need to be added rather than reused
 as-is are:
-\begin{enumerate}[label=(\roman*),leftmargin=2.2em]
+\vspace{-\parskip}
+\begin{enumerate}[label=(\roman*),leftmargin=2.2em,itemsep=0pt,topsep=0pt,parsep=0.205em,partopsep=0pt]
 \item give the prior mean a domain input, split by block (content on $c=(y,t)$, style on $r=(t,e)$), since
       \texttt{mean\_net} currently has none;
 \item decide, deliberately, whether M1's content mechanism should be shared across the $n_c$ coordinates (as

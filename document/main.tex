@@ -8,12 +8,13 @@
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
 
-\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=blue!60!black,urlcolor=blue!60!black,bookmarksnumbered]{hyperref}
 \usepackage[capitalise,nameinlink]{cleveref}
 \usepackage{caption}
 \captionsetup[figure]{labelfont=bf, textfont=it} % Optional: Bolds "Figure 1"
 \usepackage{float}
 \usepackage{fnpct} %moves footnote marks after following punctuation (comma or full stop)
+\usepackage{parskip}
 
 % ---------- theorem-like environments ----------
 \theoremstyle{definition}
@@ -121,6 +122,14 @@ model, assumptions, environment requirements and implementation}
 
 % ---------------------------------------------------------------------
 \input{app_linear_probe}
+\newpage
+
+% ---------------------------------------------------------------------
+\input{app_bilip_variants.tex}
+\newpage
+
+% ---------------------------------------------------------------------
+\input{app_support_relaxation.tex}
 \newpage
 
 \addtocontents{toc}{%

@@ -9,6 +9,8 @@ model, ANM; the meaning of $\epsilon_i^{(u)}$ is discussed in \cref{app:eps}), w
 DAG $\G_Z$ holds in every environment and the mechanisms $f_i^{(u)}$ may change arbitrarily with
 $u$. Write $p^{(u)}_Z$ for the density of $Z^u$; it is assumed third-order differentiable (and hence 
 --  continuous) with \emph{full support on $\R^{n}$}.
+\footnote{See \cref{app:support} for what they use this assumption for and what must be done
+to relax it.}
 
 \subsection{Ng et al. objective}
 Ng et al. objective is to learn an \textit{observationally equivalent} model 
@@ -26,9 +28,9 @@ the models $(\hat g, p_{\hat Z}, \G_{\hat Z})$ and $(g, p_Z, \G_Z)$ are said to 
 
 \subsection{Graph notions}
 The \emph{Markov network} $\Mk_Z$ has an edge $\{Z_i,Z_j\}$ \ifft \ 
-$Z_i\not\perp Z_j\mid Z_{[n]\setminus\{i,j\}}$, equivalently \ifft \linebreak
-$\partial^2\log p^{(u)}(Z)/\partial Z_i\partial Z_j\not\equiv0$ for some $u$; under faithfulness it is
-the moral graph of $\G_Z$. Write $\mathcal{E}(\Mk_Z)$ for its edge set, $\Delta(\Mk_Z)$ for its 
+$Z_i\not\perp Z_j\mid Z_{[n]\setminus\{i,j\}}$, equivalently (if derivatives exist) \ifft\ 
+$\partial^2\log p^{(u)}(Z)/\partial Z_i\partial Z_j\not\equiv0$ for some $u$; under faithfulness it 
+is the moral graph of $\G_Z$. Write $\mathcal{E}(\Mk_Z)$ for its edge set, $\Delta(\Mk_Z)$ for its 
 set of triangles and $\deg_{\Mk_Z}(v)$ for the degree of a node. 
 The \emph{surrounding parents} of $Z_i$ are
 \[
@@ -87,9 +89,9 @@ Without further assumptions nonlinear ICA and hence CRL are not identifiable \ci
 the environments supply the needed variation. The Markov-network stage alone is the result of
 \cite{zhang2024}, which yields identification only up to mixing with ``intimate neighbors''.
 
-Algorithm~1 requires learning $(\hat g^t, p^t_{\hat Z}, \G^t_{\hat Z})$, where $t$ is the iteration 
-index, under additional constraints to achieve \cref{eq:obs_equiv} -- observational equivalence. 
-They propose to use a VAE to that end with additional regularization terms. 
+\cite[Algorithm~1]{ng2025} requires learning $(\hat g^t, p^t_{\hat Z}, \G^t_{\hat Z})$, where $t$ is 
+the iteration index, under additional constraints to achieve \cref{eq:obs_equiv} -- observational 
+equivalence. They propose to use a VAE to that end with additional regularization terms. 
 
 \subsection{Gaussianity assumptions in ANM}
 Ng et al. assume Gaussianity in two places: 

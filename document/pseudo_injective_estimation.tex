@@ -95,14 +95,15 @@ forward pass -- the same iteration-speed argument \cref{sec:archB} already makes
 Everything from here on assumes this choice; it should still pass \cref{app:probe}'s screen before being
 trusted, the same as any candidate.
 
-\textbf{How the frozen encoder is run} (\texttt{invae.py}, \texttt{extract\_features.py}). The released
-IN-VAE is REPA-E's own \texttt{AutoencoderKL} class (a port of the CompVis latent-diffusion VAE, loaded
-from a clone of their repository with a strict state-dict load), \emph{not} the Hugging Face
-\texttt{diffusers.AutoencoderKL} that the trainable head uses (\cref{sec:pseudoinj:arch}). The facts that
-matter for the pipeline:
+\textbf{How the frozen encoder is run} (\texttt{invae.py}, \texttt{extract\_features.py}). The 
+released IN-VAE is REPA-E's own \texttt{AutoencoderKL} class (a port of the CompVis latent-diffusion 
+VAE, loaded from a clone of their repository with a strict state-dict load), \emph{not} the Hugging 
+Face original \linebreak
+\texttt{diffusers.AutoencoderKL} that the trainable head uses  
+(\cref{sec:pseudoinj:arch}). The facts that matter for the pipeline:
 \begin{itemize}[leftmargin=1.5em]
-\item the cached $\tilde x$ is the posterior \emph{mean} of the encoder (deterministic, no sampling, no
-      gradient);
+\item the cached $\tilde x$ is the posterior \emph{mean} of the encoder (deterministic, no sampling, 
+      no gradient);
 \item input range is $[-1,1]$, with no ImageNet mean/std normalization;
 \item it is trained at $256\times256$, giving a $(32,16,16)$ latent, so images must be $256\times256$
       (the tools do not resize);
@@ -139,24 +140,70 @@ different objects.
       geodesic distances are estimated once by an Isomap-style shortest-path computation
       (\cref{sec:pseudoinj:gotchas}). The paper's Theorem~1 gives a separation criterion; the loss
       implemented is the released \texttt{InjectiveLoss}.
-\item The \emph{bi-Lipschitz} regularization term (BILIP) acts on the \emph{decoder side} and uses 
-      no geodesic table.
-      With $J=\partial\,\mathrm{decode}/\partial z$ and $G=J^\top J$ (the $D\times D$ pulled-back
-      metric), it penalizes the off-diagonal entries of $G$ (latent directions should stay 
-      orthogonal in feature space) and the diagonal entries above an upper bound $L=2$ (squared 
-      hinge). There is no lower-bound term (BLAE uses $0$). The Jacobian is computed by forward-mode 
-      differentiation on a random fraction ($0.3$) of the batch. 
-      The paper argues \cite[Theorem 4]{zhan2026blae} that the relaxation 
-      \cite[Definition 4]{zhan2026blae} and 
-      the resulting regularization is \emph{admissible} \cite[Definition 3]{zhan2026blae} with a 
-      latent dimension $n=O(k)$, linear in the intrinsic dimension $k$ of the data manifold
-      $(k \leq n \leq 2k)$, whereas a hard isometric-embedding guarantee needs $n=O(k^2)$.
+\item The \emph{bi-Lipschitz} regularization term (BILIP) acts on the \emph{decoder side}
+      and uses no geodesic table (as opposed to the INJ term). 
+      With $J=\partial\,\mathrm{decode}/\partial z$ (a $P\times D$ matrix, $P$ the dimensionality of 
+      input $\tilde x$) it has two variants, named
+      after the \texttt{reg\_grad} values of the released BLAE code and selected by
+      \texttt{loss.bilip\_variant}; the choice is the user's
+      (\cref{sec:schedule:objects}). Both compute $J$ by forward-mode differentiation
+      on a random fraction ($0.3$) of the batch.
+      \begin{itemize}[leftmargin=1.3em]
+      \item \texttt{bi-lipschitz\_dec} is \cite[Eq.~(12)]{zhan2026blae}. With
+	        \[
+	        \ell_{\mathrm{biLip}}=
+	        \mathbb{E}\left[\left(\mathrm{ReLU}\left(\tfrac{1}{\kappa}-\sigma_{\min}\right)\right)^2
+	        +\left(\mathrm{ReLU}\left(\sigma_{\max}-\kappa\right)\right)^2\right], 
+	        \qquad \kappa\ge1,
+	        \]
+            so the singular values are kept in $[1/\kappa,\kappa]$: no latent direction is
+            collapsed beyond $1/\kappa$, none is stretched beyond $\kappa$. 
+            Both extremes come from one \texttt{torch.linalg.svdvals} call.
+      \item \texttt{bi-lipschitz} is the default branch of the released code. With
+            $G=J^\top J$ (the $D\times D$ pulled-back metric) it penalizes the off-diagonal
+            entries of $G$ (latent directions should stay orthogonal in feature space) and
+            the diagonal entries above an upper bound $L$ (squared hinge). There is no
+            lower-bound term (the released code multiplies it by $0$), so nothing in it
+            prevents a direction from collapsing.
+      \end{itemize}
+\end{itemize}
+\textbf{Which variant is the paper's.} The paper describes one regularizer only,
+Eq.~(12), which is \texttt{bi-lipschitz\_dec}. The released \texttt{swiss\_roll.ipynb},
+however, calls \texttt{bi-lipschitz}, with hyperparameters equal to the Swiss Roll column
+of the paper's Table~3 ($\lambda_{\mathrm{reg}}=1$, $\lambda_{\text{bi-Lip}}=0.3$,
+$\kappa=1$, $\epsilon=0.3$); an earlier version of that notebook shows a BLAE figure that
+matches visually Figure~3 of the paper. In correspondence (October 2026) the author states that
+the paper's experiments use \texttt{bi-lipschitz\_dec}, that the four variants of the code
+are equivalent in theory if $\mathrm{dec}\circ\mathrm{enc}$ is the identity and orthogonal
+transformations are ignored, and that \texttt{bi-lipschitz\_dec} is used because it works
+best empirically. The two pieces of evidence are not reconciled here; in particular it is
+not known which variant produced \cite[Figure~3]{zhan2026blae}. See \cref{app:bilip}.
+
+\textbf{What the paper's theory covers.} The paper argues \cite[Theorem~4]{zhan2026blae}
+that the bi-Lipschitz relaxation \cite[Definition~4]{zhan2026blae}, regularized as in
+Eq.~(12), is \emph{admissible} \cite[Definition~3]{zhan2026blae} (the set of global minima
+of the regularizer does not depend on the sampling measure of the data) with a latent
+dimension $n=O(k)$, linear in the intrinsic dimension $k$ of the data manifold
+$(k \leq n \leq 2k)$, whereas a hard isometric-embedding guarantee needs $n=O(k^2)$.
 \footnote{According to the Cartan-Janet theorem \cite{burstin1931,cartan1927,janet1926} and the 
 Nash embedding theorem \cite{nash1956}, a $k$-dimensional compact 
 Riemannian manifold requires a latent dimension $n$ of $O(k^2)$ to guarantee an isometric embedding
 (distance preserving); this latent dimension must satisfy 
 $\frac{k(k+1)}{2} \le n \le \frac{k(3k+11)}{2}$.}
-\end{itemize}
+By \cite[Theorem~3]{zhan2026blae} the bounds of Eq.~(12) are, for a diffeomorphism,
+equivalent to the decoder being $\kappa$-bi-Lipschitz. This covers the two-sided loss
+only, and three limits apply: 
+\begin{enumerate*}[label=(\roman*)]
+\item admissibility is a property of the global minima of
+the regularizer on its own, not of what training finds, and it is not shown for the full
+loss with reconstruction (and, here, KL); 
+\item Theorem~4 says that \emph{some} finite
+$\kappa\ge1$ admits an embedding, it gives no bound on $\kappa$, and a large $\kappa$
+weakens the constraint, so $\kappa$ is a tuned hyperparameter; 
+\item nothing is claimed
+for \texttt{bi-lipschitz}, which has no lower bound and an off-diagonal term.
+\end{enumerate*}
+
 This is a \emph{trained regularizer}, not a proof of injectivity, and it is unproven at ImageNet 
 scale: the paper's own experiments are Swiss Roll, dSprites, MNIST, CIFAR-10, Bird, and Teapot.\\
 
@@ -187,8 +234,9 @@ replaces it.
       the image-side tensor, so its Jacobian has only $D$ columns and $J^\top J$ is a $D\times D$
       matrix. Forward-mode differentiation gives $J$ with about $D$ passes per sample. This is exactly
       what the bi-Lipschitz term of \cref{sec:pseudoinj:blae} already does when it evaluates the decoder
-      Jacobian. That term is a regularizer, however, and only needs approximate singular values. A
-      likelihood needs the exact $\log\det$ and its gradient at every step.
+      Jacobian. That term is a regularizer, however, and only needs a hinge penalty on the
+      singular values of $J$ (or on the entries of $J^\top J$). A likelihood needs the exact
+      $\log\det$ and its gradient at every step.
 \item \emph{Cost is a real but secondary obstacle.} Backpropagating through $\log\det(J^\top J)$ means
       differentiating through forward-mode Jacobians of a convolutional decoder with attention, at every
       training step and for every sample. The attention blocks must also be run with the unfused (math)
@@ -326,8 +374,11 @@ approximate, weighted use is sufficient.
 		   one-to-one map.
 		\end{enumerate}
 		\item \textbf{What BLAE adds.} INJ sets an explicit floor, so latent distances can't fall 
-		   below 0.3 of the input geodesic distances. BILIP keeps the decoder's metric 
-		   well-conditioned.
+		   below 0.3 of the input geodesic distances. BILIP controls the decoder's metric: the
+		   variant \texttt{bi-lipschitz\_dec} keeps the singular values of the decoder Jacobian
+		   in $[1/\kappa,\kappa]$, hence well-conditioned; the variant \texttt{bi-lipschitz}
+		   bounds only the stretch and the overlap of the latent directions, with no lower
+		   bound.
 		\item \textbf{Honest caveat.} BLAE is a hedge, not a proven need. It is untested at this 
 		   scale and untested together with a KL term, as the note already says. If the first runs 
 		   show distinct inputs staying apart without it, you could set \texttt{lambda\_inj} and 
@@ -361,24 +412,36 @@ because the content prior mean depends on $\hat z$ itself and no analytic KL exi
 in \cref{eq:pseudoinj-loss} except inside $\ell_{\mathrm{biLip}}$}, by the decision of
 \cref{sec:pseudoinj:jacobian}. The weights are not constants: when each term starts, ramps and
 switches off is the subject of \cref{sec:schedule}; the starting targets are $\lambda_{\mathrm{inj}}=0.1$
-and $\lambda_{\mathrm{biLip}}=10^{-4}$, both guesses with no published anchor.
+and $\lambda_{\mathrm{biLip}}=10^{-4}$, both guesses for this setting. BLAE's own values
+(its Table~3: $1$ to $30$ for the injective term, $0.1$ to $0.3$ for the bi-Lipschitz
+term) are on other loss scales and do not transfer, but they suggest that ours may be too
+small; the gradient-scale probe of \cref{sec:schedule:gradlog} is the tool to check.
 
 \subsection{Why this is more principled than plain Option B -- and what it still is not}
 \label{sec:pseudoinj:principled}
 Both stages of this pipeline carry an explicit, measurable regularizer toward injectivity: IN-VAE's
 reconstruction training (rewards approximate invertibility directly, unlike a classification objective);
 the head's injective and bi-Lipschitz losses (the first bounds the ratio of latent to geodesic
-distances, the second bounds the pulled-back metric of the decoder, each with a stated target).
+distances to $[0.3,1]$; the second, in the variant \texttt{bi-lipschitz\_dec}, keeps the
+singular values of the decoder Jacobian in $[1/\kappa,\kappa]$, and in the variant
+\texttt{bi-lipschitz} bounds only the diagonal of the pulled-back metric by $L$ and
+penalizes its off-diagonal; each with a stated target).
 Plain \nameref{sec:archB} has neither -- \cref{sec:archB:gap}'s gap is totally unexamined there.
 This is genuinely better: instead of an unknown, unbounded gap, the deviation here has stated targets
-(ratio in $[0.3,1]$, diagonal of the pulled-back metric at most $L$) against which the trained model can
-be measured after the fact, for example by the fraction of held-out pairs whose ratio falls outside the
-band. The regularizers themselves do not report that gap during training.
+(ratio in $[0.3,1]$; singular values in $[1/\kappa,\kappa]$ for \texttt{bi-lipschitz\_dec},
+diagonal of the pulled-back metric at most $L$ for \texttt{bi-lipschitz}) against which the
+trained model can be measured after the fact, for example by the fraction of held-out pairs
+whose ratio falls outside the band, or (for \texttt{bi-lipschitz\_dec}) the fraction of
+held-out latent points at which a singular value of the decoder Jacobian falls outside
+$[1/\kappa,\kappa]$. The regularizers themselves do not report that gap during training.
 
 It is not a proof of injectivity, and \cref{thm:ng}'s hypothesis -- $g$ an exact $\mathrm{C}^2$ 
 diffeomorphism onto
 its image -- is still, strictly, violated by both IN-VAE and the head, in exactly the same
-\emph{category} of gap \cref{sec:archB:gap} already names for plain Option B. The honest claim is:
+\emph{category} of gap \cref{sec:archB:gap} already names for plain Option B. BLAE's
+admissibility statement (\cref{sec:pseudoinj:blae}) concerns the global minima of the
+two-sided regularizer alone and does not carry over to the trained combination used here.
+The honest claim is:
 \textbf{bounded and diagnosable distortion, not solved injectivity.} This should be stated exactly this
 plainly wherever this pipeline is invoked elsewhere in the note, the same way \cref{sec:archB:gap} states
 its own gap without softening it.
@@ -396,6 +459,14 @@ its own gap without softening it.
       published result. $\lambda_{\mathrm{kl}}$ against $\lambda_{\mathrm{inj}},\lambda_{\mathrm{biLip}}$
       needs to be tuned empirically, with no prior result to anchor the starting point; the gradient-scale
       probe of \cref{sec:schedule:gradlog} is the tool for that.
+\item \textbf{Which BILIP variant.} The paper's loss (Eq.~(12), \texttt{bi-lipschitz\_dec})
+      and the loss the released Swiss Roll notebook calls (\texttt{bi-lipschitz}) differ,
+      and the author states that the paper used the former (\cref{sec:pseudoinj:blae}).
+      Both are implemented and the choice is the user's
+      (\texttt{loss.bilip\_variant}); the configuration default is \texttt{bi-lipschitz}.
+      The bound \texttt{loss.bilip\_L} is $L$ in one and $\kappa\ge1$ in the other, and the
+      two numbers are not on the same scale: with $G$ diagonal, $\mathrm{diag}(G)\le L$
+      means $\sigma_{\max}\le\sqrt{L}$. Switching variant means re-tuning the weight.
 \item \textbf{Extreme compression ratio.} \texttt{AutoencoderKL}'s stock configurations target hundreds 
       to thousands of latent channels, not $\sim\!10$; squeezing this far raises real underfitting/
       posterior-collapse risk. \Cref{sec:pseudoinj:arch} above hand-tunes depth and channel width down 
@@ -423,6 +494,10 @@ its own gap without softening it.
       \texttt{AutoencoderKL} have no forward-mode rule, so the plain (math) attention backend is forced
       inside the bi-Lipschitz term. It costs about $D$ decoder passes per sample on a random fraction of
       the batch, which is why it is the most expensive term and is started last (\cref{sec:schedule}).
+      The variant \texttt{bi-lipschitz\_dec} adds one \texttt{torch.linalg.svdvals} of the
+      $P\times D$ Jacobian per row ($P=8192$ output scalars, $D\approx10$); the released
+      code calls \texttt{torch.linalg.matrix\_norm} twice (orders $2$ and $-2$), which
+      PyTorch implements as two full \texttt{svdvals} calls, so one call suffices.
 \item \textbf{Resolution.} IN-VAE candidates (including the chosen one) are pretrained at 
       $256$px, and the feature-extraction and dataset code of this pipeline (\texttt{extract\_features.py},
       \texttt{ti\_dataset.py}) use $256\times256$ images and the matching bounding-box transform. The

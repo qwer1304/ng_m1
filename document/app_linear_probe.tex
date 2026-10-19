@@ -45,16 +45,17 @@ Two separate probes are needed because content and style are different questions
 \subsection{Data split}
 \label{app:probe:split}
 \begin{itemize}[leftmargin=1.5em]
-\item \textbf{L100 is never used by either probe}, for fitting or for scoring. This diagnostic selects
-      a backbone using only train-location data; L100 stays reserved for evaluating the eventual M1
-      pipeline, consistent with its role everywhere else in this note.
-\item \textbf{Within L38/L43/L46, use stratified $k$-fold cross-validation}
-	\footnote{``Stratified jointly by species and location'' means the folds are built to preserve in 
-	each fold the proportions of each species$\times$location combination in the full dataset, so every 
-	fold has a representative slice of, say, ``raccoon at L43'' and not just ``raccoon'' in general. That 
-	matters specifically for the within-species location probe: since it's scored per species, you need 
-	each species to have reasonable location coverage in every fold, or some folds simply can't produce 
-	a meaningful location accuracy for the rarer species.}
+\item \textbf{Test domain is never used by either probe}, for fitting or for scoring. This 
+      diagnostic selects
+      a backbone using only train-location data; test domain stays reserved for evaluating the 
+      eventual M1 pipeline, consistent with its role everywhere else in this note.
+\item \textbf{Within training domains, use stratified $k$-fold cross-validation}
+	\footnote{``Stratified jointly by species and location'' means the folds are built to preserve 
+	in each fold the proportions of each species$\times$location combination in the full dataset, so 
+	every fold has a representative slice of, say, ``raccoon at L43'' and not just ``raccoon'' in 
+	general. That matters specifically for the within-species location probe: since it's scored per 
+	species, you need each species to have reasonable location coverage in every fold, or some folds 
+	simply can't produce a meaningful location accuracy for the rarer species.}
 	(e.g.\ $k=5$), stratified
       jointly by species and location, rather than a single train/test split. Two reasons a single
       split is not enough here: species classes are imbalanced (raccoon dominant; bird/dog/squirrel
@@ -66,8 +67,9 @@ Two separate probes are needed because content and style are different questions
 \item In every fold, the linear classifier is fit on the training portion of that fold only and scored
       on the held-out portion; no image contributes to both fitting and scoring for the same fold.
 \end{itemize}
-
+\vspace{\dimexpr-\parskip+3pt\relax}
 \subsection{Metric}
+\vspace{\dimexpr-\parskip+3pt\relax}
 Report \textbf{macro accuracy} (per-class accuracy, averaged across classes) for both probes, not raw
 accuracy, for the same reason macro accuracy is the chosen metric for the main species classifier
 (\cref{sec:setting}): with raccoon dominant and bird/dog/squirrel data-limited, raw accuracy would be
@@ -76,11 +78,12 @@ species$\times$location cells, are actually separable in the embedding. For the 
 compute macro accuracy over locations within each species, then average over species (weighting
 species equally, not by sample count), so that a species with few images does not vanish from the
 result.
-
+\vspace{\dimexpr-\parskip+3pt\relax}
 \subsection{Procedure}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+\vspace{\dimexpr-\parskip+3pt\relax}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em,itemsep=0pt,topsep=0pt,parsep=0.4em,partopsep=0pt]
 \item For each candidate (backbone $\times$ BN-recalibration variant), take the cached embeddings for
-      all train-location images (\cref{sec:archB}), excluding L100.
+      all train-location images (\cref{sec:archB}), excluding the test domain.
 \item Run stratified $k$-fold cross-validation (\cref{app:probe:split}) with a linear classifier
       (e.g.\ multinomial logistic regression) to get:
       \begin{itemize}[leftmargin=1.3em]
@@ -90,8 +93,9 @@ result.
       \end{itemize}
 \item Record both numbers per candidate.
 \end{enumerate}
-
+\vspace{\dimexpr-\parskip+3pt\relax}
 \subsection{Decision rule}
+\vspace{\dimexpr-\parskip+3pt\relax}
 Prefer the candidate with high macro species accuracy and macro within-species location accuracy
 clearly above chance (chance being $1/|\Lset_t|$ within each species' available locations, averaged
 the same way as the metric). A candidate that is high on species accuracy but at chance on location

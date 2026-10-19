@@ -16,7 +16,7 @@ Each loss class is a self-contained object. It owns, behind methods:
   * its own answer to "am I ready?" (ready()).
 The MODEL makes only the global, cross-loss decisions, from the user cfg,
 and executes them through the methods below. Examples: "do not start KL
-until REC is ready", "start SPARSE when KL has settled", "switch SPARSE and
+until REC is ready", "start SPARSE when KL is ready", "switch SPARSE and
 MORAL off when all content nodes are frozen", "if REC has not plateaued by
 epoch 30, ...". The model never computes a loss and never looks inside one.
 
@@ -37,8 +37,7 @@ initial weight in epoch e+1 and gains one step at the end of each following
 epoch.
 
 stats passed to end_epoch: dict with the epoch means of the unweighted terms
-(stats["rec"], stats["kl"], ...), computed by the Trainer, plus the
-validation numbers (stats["val_kl"], ...) when a validation set exists.
+(stats["rec"], stats["kl"], ...), computed by the Trainer.
 
 =======================================================================
 THE TOTAL LOSS (per minibatch, all terms are batch means / scalars)
@@ -61,6 +60,21 @@ WEIGHT MECHANICS (ScheduledLoss)
                                   with f0 = init_frac or 0; ramp_epochs <= 0
                                   means target right at start.
   Constant losses (REC, INJ) are created already started.
+
+=======================================================================
+THE TWO BILIP VARIANTS
+=======================================================================
+BILIP has two variants, chosen by LossConfig.bilip_variant (the names are the
+reg_grad values of the released BLAE code, github.com/qipengz/BLAE):
+  "bi-lipschitz"      bilipschitz_decoder_loss: off-diagonal of G = J^T J
+                      pushed to 0, diagonal of G capped at L, NO lower bound.
+                      This is what the released swiss_roll.ipynb calls.
+  "bi-lipschitz_dec"  bilipschitz_dec_loss: Eq. 12 of the BLAE paper,
+                      relu(1/kappa - smin)^2 + relu(smax - kappa)^2 on the
+                      singular values of J. According to the BLAE author, the
+                      results of the paper were obtained with this one.
+Both use the same decoder Jacobian (_decoder_jacobian). The choice is the
+user's; neither is the default of this module (config.py sets the default).
 """
 
 from __future__ import annotations
@@ -135,25 +149,22 @@ def injective_loss(geod: torch.Tensor, z: torch.Tensor, thresh: float = 0.3) -> 
     return torch.mean(F.relu(math.log(thresh) - torch.log(lip)) + 5.0 * F.relu(lip - 1.0))
 
 
-def bilipschitz_decoder_loss(
+def _decoder_jacobian(
     decode_fn: Callable[[torch.Tensor], torch.Tensor],
     z: torch.Tensor,
-    L: float = 2.0,
-    subset_frac: float = 0.3,
+    subset_frac: float,
 ) -> torch.Tensor:
     """
-    BLAE decoder-Jacobian bi-Lipschitz regulariser. With J = d decode/d z and
-    G = J^T J (D x D pulled-back metric): penalise the off-diagonal entries of
-    G (latent directions should stay orthogonal in feature space) and diagonal
-    entries above L (upper Lipschitz bound). No lower-bound term (BLAE uses 0).
+    Jacobian J = d decode / d z at a random fraction of the rows of z.
 
-    decode_fn  (b, D) -> (b, ...) e.g. HEAD.decode.
-    z          (b, D) latents; PASS mu.
-    L          upper bound on diag(G).
-    subset_frac fraction of the batch (random) on which the Jacobian is
-               computed.
-    The fused attention kernels in AutoencoderKL do not support forward-mode
-    AD, so the plain "math" attention backend is forced inside this function.
+    decode_fn   (b, D) -> (b, ...) e.g. HEAD.decode.
+    z           (b, D) latents; PASS mu.
+    subset_frac fraction of the batch (random) on which J is computed.
+    Returns (k, P, D): k = max(1, round(b * subset_frac)) rows, P = number of
+    output scalars per row, D latent dimension. Forward-mode AD (jacfwd), about
+    D decoder passes per row. The fused attention kernels in AutoencoderKL do
+    not support forward-mode AD, so the plain "math" attention backend is
+    forced here.
     """
     b = z.shape[0]
     k = max(1, round(b * subset_frac))
@@ -161,12 +172,68 @@ def bilipschitz_decoder_loss(
     single = lambda v: decode_fn(v.unsqueeze(0)).squeeze(0)
     with sdpa_kernel(SDPBackend.MATH):
         jac = vmap(jacfwd(single))(zs)  # (k, *out_shape, D)
-    jac = jac.reshape(k, -1, zs.shape[1])
+    return jac.reshape(k, -1, zs.shape[1])
+
+
+def bilipschitz_decoder_loss(
+    decode_fn: Callable[[torch.Tensor], torch.Tensor],
+    z: torch.Tensor,
+    L: float = 2.0,
+    subset_frac: float = 0.3,
+) -> torch.Tensor:
+    """
+    Variant "bi-lipschitz" (the default reg_grad branch of the released BLAE
+    code). With J = d decode/d z and G = J^T J (D x D pulled-back metric):
+    penalise the off-diagonal entries of G (latent directions should stay
+    orthogonal in feature space) and diagonal entries above L (upper bound).
+    No lower-bound term (the released code multiplies it by 0). Note that this
+    is NOT the two-sided singular-value loss of Eq. 12 of the BLAE paper (see
+    bilipschitz_dec_loss).
+
+    decode_fn  (b, D) -> (b, ...) e.g. HEAD.decode.
+    z          (b, D) latents; PASS mu.
+    L          upper bound on diag(G).
+    subset_frac fraction of the batch (random) on which the Jacobian is
+               computed.
+    """
+    jac = _decoder_jacobian(decode_fn, z, subset_frac)  # (k, P, D)
     G = torch.bmm(jac.transpose(1, 2), jac)  # (k, D, D)
-    D = zs.shape[1]
+    D = z.shape[1]
     diag = torch.diagonal(G, dim1=1, dim2=2)
     off = G[:, ~torch.eye(D, dtype=torch.bool, device=z.device)]
     return torch.mean(off.pow(2).sum(1)) + torch.mean(F.relu(diag - L).pow(2).sum(1))
+
+
+def bilipschitz_dec_loss(
+    decode_fn: Callable[[torch.Tensor], torch.Tensor],
+    z: torch.Tensor,
+    kappa: float = 2.0,
+    subset_frac: float = 0.3,
+) -> torch.Tensor:
+    """
+    Variant "bi-lipschitz_dec": Eq. 12 of the BLAE paper, as in the reg_grad
+    branch 'bi-lipschitz_dec' of the released code. With smax and smin the
+    largest and smallest singular values of the decoder Jacobian J:
+        mean over rows of  relu(1/kappa - smin)^2 + relu(smax - kappa)^2
+    i.e. both directions of the singular-value range [1/kappa, kappa] are
+    enforced, the lower one keeps the decoder from collapsing a latent
+    direction.
+
+    One torch.linalg.svdvals call gives both extremes. (The released code
+    calls torch.linalg.matrix_norm twice, with ord=2 and ord=-2; PyTorch
+    implements both through svdvals of the whole matrix, so that is two full
+    SVDs.)
+
+    decode_fn   (b, D) -> (b, ...) e.g. HEAD.decode.
+    z           (b, D) latents; PASS mu.
+    kappa       >= 1 (config.py validates it); singular values of J are kept
+                in [1/kappa, kappa].
+    subset_frac fraction of the batch (random) on which J is computed.
+    """
+    jac = _decoder_jacobian(decode_fn, z, subset_frac)  # (k, P, D)
+    s = torch.linalg.svdvals(jac)  # (k, min(P, D)), descending
+    smax, smin = s[:, 0], s[:, -1]
+    return torch.mean(F.relu(1.0 / kappa - smin).pow(2) + F.relu(smax - kappa).pow(2))
 
 
 # ----------------------------------------------------------------------
@@ -350,65 +417,16 @@ class KLLoss(ScheduledLoss):
       * the ramp (linear, kl_ramp_epochs, to target) is started by the model
         once REC.ready() (the plateau). The model owns the cap on that wait.
       * ready() (default) is True once the ramp has reached the target; the
-        model then switches the adjacency from the full off-diagonal mask to
-        the lower-triangular one.
-      * KL also owns the SETTLE detector, used after that switch: settled()
-        is True once the epoch-mean KL (validation KL when stats has
-        "val_kl", else train KL) has changed by less than `settle_tol`
-        (relative) between `settle_window` epochs ago and now, counting only
-        epochs observed since the last reset_settle(). The model calls
-        reset_settle() at the switch (the KL term itself jumps there, so the
-        history from before it must not count). Latches until the next
-        reset. KL is a single-sample estimate and noisy, hence the separate
-        window and tolerance (config: settle_window, settle_tol).
+        model starts SPARSE then.
     """
 
     def __init__(self, target: float, init_frac: float, ramp_epochs: int,
-                 settle_window: int = 5, settle_tol: float = 0.02,
                  enabled: bool = True):
         super().__init__("kl", target, ramp_epochs=ramp_epochs, init_frac=init_frac,
                          enabled=enabled)
-        self.settle_window, self.settle_tol = int(settle_window), float(settle_tol)
-        self.settle_history: List[float] = []
-        self.settle_flag = False
-        self.last_observed: Optional[float] = None
 
     def forward(self, out):
         return kl_mc(out["log_q"], out["log_p"])
-
-    # ---------------- settle detector ----------------
-    def observe(self, stats):
-        kl = float(stats["val_kl"]) if "val_kl" in stats else float(stats["kl"])
-        self.last_observed = kl
-        self.settle_history = (self.settle_history + [kl])[-(self.settle_window + 1):]
-        if not self.settle_flag and len(self.settle_history) == self.settle_window + 1:
-            old, new = self.settle_history[0], self.settle_history[-1]
-            if abs(new - old) < self.settle_tol * max(abs(old), 1e-12):
-                self.settle_flag = True
-
-    def settled(self) -> bool:
-        return self.settle_flag
-
-    def reset_settle(self) -> None:
-        """Forget the history and un-latch (the model calls this at the switch)."""
-        self.settle_history, self.settle_flag = [], False
-
-    def info(self) -> dict:
-        return {"last_observed": self.last_observed, "settled": self.settle_flag}
-
-    def schedule_state(self) -> dict:
-        s = super().schedule_state()
-        s.update({"settle_history": list(self.settle_history),
-                  "settle_flag": self.settle_flag,
-                  "last_observed": self.last_observed})
-        return s
-
-    def load_schedule_state(self, s: dict) -> None:
-        super().load_schedule_state(s)
-        # .get: checkpoints written before the settle detector have no keys
-        self.settle_history = list(s.get("settle_history", []))
-        self.settle_flag = bool(s.get("settle_flag", False))
-        self.last_observed = s.get("last_observed")
 
 
 class SparseLoss(ScheduledLoss):
@@ -421,8 +439,7 @@ class SparseLoss(ScheduledLoss):
     subtracted, so the value is never 0 while the block is non-empty.
 
     Decisions for this loss
-      * inactive (weight 0) until the model starts it, when the adjacency
-        has been switched to lower-triangular and KL has settled.
+      * inactive (weight 0) until the model starts it, when KL.ready().
       * linear ramp (sparse_ramp_epochs) from 0 to target.
       * the model switches it off when all content nodes are frozen (the
         block is then empty and the graph is fixed).
@@ -510,10 +527,18 @@ class InjLoss(ScheduledLoss):
 
 class BilipLoss(ScheduledLoss):
     """
-    BILIP: BLAE decoder-Jacobian bi-Lipschitz term, computed on mu. By far the
-    most expensive loss (about D decoder passes per sample on a random
-    fraction `subset_frac` of the batch; the plain "math" attention backend is
-    forced because the fused kernels have no forward-mode rule).
+    BILIP: BLAE decoder-Jacobian regularizer, computed on mu, in one of two
+    variants (the `variant` argument, from LossConfig.bilip_variant; the user
+    chooses, see the module docstring):
+      "bi-lipschitz"      off-diagonal of J^T J to 0, diagonal capped at L,
+                          no lower bound (bilipschitz_decoder_loss);
+      "bi-lipschitz_dec"  Eq. 12 of the BLAE paper, singular values of J kept
+                          in [1/kappa, kappa], kappa = L (bilipschitz_dec_loss).
+    By far the most expensive loss (about D decoder passes per sample on a
+    random fraction `subset_frac` of the batch; the plain "math" attention
+    backend is forced because the fused kernels have no forward-mode rule;
+    the "bi-lipschitz_dec" variant adds one svdvals of the (P x D) Jacobian
+    per row).
 
     Decisions for this loss
       * inactive until the model starts it, when REC.ready() (the plateau);
@@ -525,20 +550,26 @@ class BilipLoss(ScheduledLoss):
         computed with weight > 0, i.e. one epoch after the ramp starts.
     """
 
+    VARIANTS = ("bi-lipschitz", "bi-lipschitz_dec")
+
     def __init__(self, target: float, ramp_epochs: int, L: float = 2.0,
-                 subset_frac: float = 0.3, enabled: bool = True):
+                 subset_frac: float = 0.3, variant: str = "bi-lipschitz",
+                 enabled: bool = True):
         super().__init__("bilip", target, ramp_epochs=ramp_epochs, enabled=enabled)
-        self.L, self.subset_frac = L, subset_frac
+        if variant not in self.VARIANTS:
+            raise ValueError(f"variant must be one of {self.VARIANTS}, got {variant!r}")
+        self.L, self.subset_frac, self.variant = L, subset_frac, variant
         self.first_value: Optional[float] = None
 
     def forward(self, out, decode_fn):
-        v = bilipschitz_decoder_loss(decode_fn, out["mu"], self.L, self.subset_frac)
+        fn = bilipschitz_dec_loss if self.variant == "bi-lipschitz_dec" else bilipschitz_decoder_loss
+        v = fn(decode_fn, out["mu"], self.L, self.subset_frac)
         if self.first_value is None:
             self.first_value = float(v.detach())
         return v
 
     def info(self) -> dict:
-        return {"first_value": self.first_value}
+        return {"first_value": self.first_value, "variant": self.variant}
 
     def schedule_state(self) -> dict:
         s = super().schedule_state()
@@ -568,13 +599,13 @@ class M1Losses(nn.Module):
         en = cfg.schedule
         self.terms = nn.ModuleDict({
             "rec": RecLoss(cfg.lambda_rec, cfg.plateau_window, cfg.plateau_tol, enabled=en),
-            "kl": KLLoss(cfg.lambda_kl, cfg.kl_init_frac, cfg.kl_ramp_epochs,
-                         cfg.settle_window, cfg.settle_tol, enabled=en),
+            "kl": KLLoss(cfg.lambda_kl, cfg.kl_init_frac, cfg.kl_ramp_epochs, enabled=en),
             "sparse": SparseLoss(cfg.lambda_sparse, n_content, cfg.sparse_ramp_epochs, enabled=en),
             "moral": MoralLoss(cfg.lambda_moral, n_content, cfg.moral_ramp_epochs, enabled=en),
             "inj": InjLoss(cfg.lambda_inj, cfg.inj_thresh, enabled=en),
             "bilip": BilipLoss(cfg.lambda_bilip, cfg.bilip_ramp_epochs, cfg.bilip_L,
-                               cfg.bilip_subset_frac, enabled=en),
+                               cfg.bilip_subset_frac, variant=cfg.bilip_variant,
+                               enabled=en),
         })
 
     def weights(self) -> Dict[str, float]:
