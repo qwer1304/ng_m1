@@ -1,0 +1,339 @@
+\section{Observation noise and its removal before the pipeline}
+\label{app:noise}
+
+\Cref{def:m1} and \cref{thm:ng} describe a noiseless image $X^u=g(Z^u)$. An image is
+\emph{environment-specific} even without noise: its latents $Z^u$ have a law that depends on the
+environment $u=(y,t,e)$ (content through $c(u)=(y,t)$, style through $r(u)=(t,e)$), so the clean image
+$g(Z^u)$ is already location-specific. The only objects assumed to be shared across environments are the
+mixing $g$ and the noiseless mechanism it defines (\labelcref{item:P1,item:P2}). This appendix extends
+the model by an additive observation noise whose level also depends on the environment (the camera and
+its location), and asks what happens downstream and what to do about it. The extension is
+\begin{equation}
+X^u \;=\; g(Z^u)+\eta^u,\qquad \eta^u\sim\Nn\bigl(0,\varsigma_u^2 I_d\bigr),
+\label{eq:noise-obs}
+\end{equation}
+with the family (Gaussian) assumed, the level $\varsigma_u$ unknown, and $\eta^u$ independent of $Z^u$
+given $u$. In M1 the level is allowed to depend on $u$ through $r(u)=(t,e)$ (camera, and day or night
+mode), not through the species $y$; this is an assumption of this appendix, not of \cite{ng2025}.
+The proposal is to \emph{clean} the image with a fixed, deterministic operation before it enters the
+frozen backbone of \cref{sec:pseudoinj:invae}. Nothing here has been run. The arguments about
+propagation are first-order arguments of mine, not results from \cite{ng2025} or any other paper, and
+are marked as such.
+
+\subsection{What is shared and what is environment-specific}
+\label{app:noise:inv}
+\paragraph{Convention.} A symbol carries the superscript $u$ (or $(u)$ for a density) \ifft\ 
+its value or its law depends on the environment. Maps that are the same for every environment carry no
+index. Realizations drawn from environment $u$ keep the index: $z^u$, $s^u$, $x^u$.
+In particular the clean image is never written as a location-free $g(z)$: it is $S^u=g(Z^u)$.
+
+\begin{center}
+\small
+\begin{tabular}{@{}L{5.2cm} L{9.8cm}@{}}
+\toprule
+\multicolumn{2}{@{}l}{\textbf{shared across environments}}\\
+\midrule
+mixing $g$ & \labelcref{item:P1}; also the manifold $\mathcal M=g(\R^n)$ it spans (the manifold is
+shared, the law on it is not)\\
+noiseless mechanism: \newline
+$p(s\mid z)=\delta_{g(z)}$ & the clean image given the latents; the same Dirac at
+every location. This is the only mechanism assumed invariant.\\
+DAG $\Gc$, content laws $p(z_c\mid c)$ & \labelcref{item:P2}; depend on $c=(y,t)$, not on $e$\\
+backbone $h$, a fixed cleaning $\mathrm{Cl}$ & design choices applied identically at every
+location and at inference\\
+\midrule
+\multicolumn{2}{@{}l}{\textbf{specific to an environment}}\\
+\midrule
+latent law $p^{(u)}_Z$ & content through $c(u)$, style through $r(u)$\\
+clean image $S^u=g(Z^u)$ and its law $p^{(u)}_S$ & the map is shared, the image is not: camera,
+geography and orientation enter through $Z_s^u$\\
+observation noise $\eta^u$, level $\varsigma_u$ & new in this appendix\\
+observed image $X^u$, law $p^{(u)}_X$ & $p^{(u)}_X=p^{(u)}_S*\Nn(0,\varsigma_u^2I)$\\
+observed conditional: \newline
+$p^{(u)}(x\mid z)=\Nn(g(z),\varsigma_u^2I)$ & \emph{not} invariant once the noise is
+location-dependent; only its mean map $g$ is\\
+cleaned image, bias, residual, cached $\tilde x^u$, estimates $\hat z^u$ & all derived from the above\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Consequence for what cleaning must do.} The task is to remove $\eta^u$ and to keep the
+location-specificity of $S^u$. Cleaning is not meant to make images location-free: the style latents
+$Z_s^u$ live in $S^u$ and the style block needs them. The line between noise and style is therefore
+this: whatever is generated through $g$ from $Z^u$ is signal (style included); whatever is added after
+$g$, independently of $Z^u$, is noise. Camera grain sits on this line. Grain that is a function of the
+style latents is style; grain that is fresh independent randomness per pixel is noise. Real grain is
+probably a mixture, and no cleaning step can separate the two exactly.
+
+\subsection{Terminology}
+\label{app:noise:terms}
+The words below are used in one sense only in this appendix. Earlier informal use of ``deconvolving an
+image'' is replaced by ``denoising'' (image level) or ``deconvolution'' (law level), see the table.
+
+\begin{center}
+\small
+\begin{tabular}{@{}l L{3.4cm} L{1.2cm} L{6.6cm}@{}}
+\toprule
+term & symbol & depends on $u$? & meaning\\
+\midrule
+signal (clean image) & $S^u=g(Z^u)\in\R^d$ & yes & the clean image of environment $u$, pixel space; the
+map $g$ is shared, the image is not\\
+structural noise & $\varepsilon$ & yes & the noise inside the latent equations
+\cref{eq:content,eq:style}; \emph{not} observation noise\\
+observation noise & $\eta^u$, level $\varsigma_u$ & yes & additive noise of \cref{eq:noise-obs}, added to
+the image after $g$\\
+observed image & $X^u=S^u+\eta^u$ & yes & what the camera delivers\\
+noise-level estimation & $\hat\varsigma$ & -- & estimating $\varsigma_u$ from images (per image, per cell,
+or per location)\\
+denoising / cleaning & $\mathrm{Cl}:\R^d\to\R^d$ & no, if fixed & a map acting on \emph{one image} that
+returns an estimate of $S^u$ (not of a location-free image); \emph{image level}\\
+deconvolution & -- & -- & undoing the convolution of laws,\newline
+$p^{(u)}_X=p^{(u)}_S*\Nn(0,\varsigma_u^2I)$; \emph{law level}. It returns a distribution, never a clean
+image\\
+filtering & $F$ & no & denoising by a fixed operator (blur, block averaging, median, fixed wavelet
+threshold)\\
+fixed / adaptive & $\mathrm{Cl}$ / $\mathrm{Cl}_{\hat\varsigma}$ & no / yes & fixed: the same map for
+every image and location; adaptive: its strength depends on $\hat\varsigma$, hence on the environment\\
+equalization & -- & -- & adding noise so that every environment ends at a common level\\
+projection & -- & -- & mapping $x$ to a nearest point of the shared manifold $\mathcal M=\{g(z)\}$
+(ideal denoising)\\
+bias of cleaning & $b^u(z)$ & yes, if $\mathrm{Cl}$ adapts & systematic distortion of the signal by
+$\mathrm{Cl}$, at fixed $z$\\
+residual noise & $r^u$ & yes & zero-mean fluctuation left after $\mathrm{Cl}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The bias and the residual are defined for the cleaned image $X'^u=\mathrm{Cl}(X^u)$ by
+\begin{equation}
+X'^u = g(Z^u)+b^u(Z^u)+r^u,\quad b^u(z)=\mathbb E[X'^u\mid Z^u=z]-g(z),\quad
+r^u=X'^u-\mathbb E[X'^u\mid Z^u].
+\label{eq:cleaned-model}
+\end{equation}
+Both are defined at fixed $z$, so any dependence of $b^u$ on $u$ comes from the cleaning (through the
+noise level), not from the law of $Z^u$. Ideal cleaning means $b^u\equiv0$ and $r^u\equiv0$.
+\newpage
+\subsection{Where the noise enters, and how it propagates}
+\label{app:noise:prop}
+The stages, in order (shared maps are marked, everything else is environment-specific):
+\begin{enumerate}[label=(\arabic*),leftmargin=2.2em]
+\item\label{item:stage1} latent $Z^u$ (content and style), with the ANM prior of \cref{sec:use}, its law
+      depending on $u$ through $c(u)$ and $r(u)$;
+\item\label{item:stage2} clean image $S^u=g(Z^u)$, by the shared map $g$ (pixel space,
+      $d\approx2\times10^5$ at $256\times256\times3$);
+\item\label{item:stage3} \textbf{noise enters here:} $X^u=S^u+\eta^u$;
+\item\label{item:stage4} optional cleaning $X'^u=\mathrm{Cl}(X^u)$ (this appendix), shared if fixed;
+\item\label{item:stage5} frozen, shared IN-VAE encoder $h$ (the backbone), giving the cached
+      $\tilde x^u=h(x'^u)$ of $32\times16\times16$ values;
+\item\label{item:stage6} trainable head: $\tilde x^u\to\hat z^u\to\hat{\tilde x}^u$, with reconstruction
+      and KL computed on $\tilde x^u$ only (\cref{sec:pseudoinj:arch});
+\item\label{item:stage7} M1 prior and Ng machinery on $\hat z^u$.
+\end{enumerate}
+The head never sees pixels and has no pixel-space decoder.
+Whatever is in $X'^u$ at stage \labelcref{item:stage4} is all
+that stages \labelcref{item:stage5,item:stage6,item:stage7} can use.
+
+\paragraph{Physical order versus the model.} A camera adds noise at native resolution, the file is then
+JPEG-compressed, and the dataset images are resized to $256\times256$ in preprocessing
+(\texttt{ti\_dataset.py} reads already resized images). So \cref{eq:noise-obs} at $256$ pixels is an
+idealization: the effective noise is reduced by the resize, spatially correlated, and not exactly
+independent of the signal. Only the level \emph{after} these steps matters, and only its dependence on
+the environment.
+
+\paragraph{No cleaning ($X'^u=X^u$).} First order (my argument): with $\Phi=h\circ g$ (both shared),
+\[
+\tilde x^u=h(g(z^u)+\eta^u)\approx\Phi(z^u)+J_h(g(z^u))\,\eta^u .
+\]
+The perturbation $J_h\eta^u$ splits into a part tangent to the manifold $\Phi(\R^n)$ and a normal part.
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{Tangent part.} It is indistinguishable from a shift of $z^u$, so what is estimated is
+      $z^u+\delta^u$, not $z^u$. The shift is correlated across coordinates and depends on $z^u$ through
+      $J_h$. Consequences for the model: spurious edges in the Markov network (including between
+      style and content, against \labelcref{item:P3}), parent-dependent residuals in the content
+      equations (the ANM is violated), and, because $\varsigma_u$ depends on the environment, an
+      estimated content law that depends on the location although $p(z_c\mid c)$ does not
+      (against \labelcref{item:P2}).
+\item \emph{Normal part.} It moves $\tilde x^u$ off the manifold. The head's reconstruction term treats
+      it as unexplained residual. It does not enter $\hat z^u$ directly, but it competes with the
+      latents for capacity.
+\end{itemize}
+Because $h$ is nonlinear and compresses $196{,}608$ values to $8{,}192$, the effective noise at the head
+is neither additive, nor Gaussian, nor isotropic. A Gaussian likelihood with a per-environment
+variance cannot be placed in the head. This is why the noise has to be handled before $h$.
+
+\paragraph{With cleaning.} By \cref{eq:cleaned-model} the head sees $g(z^u)+b^u(z^u)+r^u$, and the two
+errors act differently.
+\begin{itemize}[leftmargin=1.5em]
+\item \emph{Residual $r^u$.} It is additive and roughly independent of $z^u$. In pixel space the part of
+      isotropic noise tangent to $\mathcal M$ has total variance $n\varsigma^2$, a fraction $n/d$ of the
+      total, so it is the small part; the rest is off-manifold. What remains is the same kind of
+      perturbation as without cleaning but much smaller. It is environment-specific if $\varsigma_u$ is
+      and the cleaning does not equalize it.
+\item \emph{Bias $b^u(z)$.} It changes the mixing: the effective map is $g_u=g+b^u$. If $b^u$ does not
+      depend on $u$, then $g+b$ is again one shared map, and the only cost is some loss of
+      injectivity. If $b^u$ depends on $u$, the mixing depends on the location, which is the
+      camera-specific transformation listed as outside M1 and outside \cite{ng2025}
+      (\cref{sec:limits}); content latents then move with the location. This is the one place where
+      cleaning can break the shared mixing, which is the only thing assumed shared.
+\end{itemize}
+
+\paragraph{What is exact and what is not.}
+Under \cref{eq:noise-obs} with known $\varsigma_u$, deconvolution at the law level is exact: the
+characteristic function of a Gaussian never vanishes, so $p^{(u)}_X$ determines $p^{(u)}_S$ uniquely, and
+\cref{thm:ng} then applies to the noiseless law as before. This says nothing about images: from a
+single noisy image $x^u$ the clean image $s^u$ is not recoverable, only estimable through a prior, with
+error that depends on that prior. So exact identifiability is a statement about the ideal case
+$b^u\equiv r^u\equiv0$.
+Identifiability does not hold exactly in practice anyway (pseudo-injectivity of $h$ and of the head,
+finite samples, estimation error), so the useful question is when it holds \emph{nearly}. Working
+criterion (not a theorem):
+
+\noindent\hspace*{1cm}\fbox{\parbox{0.8\textwidth}{
+cleaning is good enough when
+the environment-dependent part of $b^u$ and the tangent part of $r^u$,
+measured as a shift of $\hat\mu_c$, is small against the error floor of the noiseless pipeline,
+where the floor is the variation of $\hat\mu$ between repeated runs on clean data (seeds, resamples).
+}}
+
+It must also stay below the margins of the method: the gaps between environments needed for sufficient
+change, the margin used to call a node a sink, and the separation of species within a cell.
+\vspace{\parskip}
+\begin{remark}[Identifying $\varsigma_u$, a sketch of mine]
+If the noise is isotropic Gaussian and $d\gg n$, the level should be identifiable at the law level: the
+law of $X^u$ deconvolved by a trial level $\varsigma'\le\varsigma_u$ stays a valid law, and it is
+singular (concentrated near an $n$-dimensional set) only at $\varsigma'=\varsigma_u$. This needs
+isotropy and $d>n$; a general unknown covariance is confounded with the tangent directions. It is not
+verified, and real noise here is not isotropic (see above).
+\end{remark}
+
+\subsection{Cleaning approaches}
+\label{app:noise:methods}
+
+\paragraph{0. No cleaning.} The baseline. All effects of \cref{app:noise:prop} are present.
+
+\paragraph{1. Fixed filter.} One operator $F$ (Gaussian or box blur, block averaging, median, fixed
+wavelet threshold), applied identically at every location and at inference. For a linear $F$,
+\[
+X'^u=Fg(Z^u)+F\eta^u,\qquad b=(F-I)g(z)\ \text{(independent of }u),\qquad r^u=F\eta^u .
+\]
+The map $F\circ g$ is shared across locations; the cleaned images are still location-specific through
+$Z^u$, and the environment-specific part of the error sits only in the residual. Averaging $k$ pixels
+reduces white noise variance by about $1/k$. Costs: it discards the
+frequency band where the noise lives, and with it fur texture, edges and camera grain, which is part of
+the style signal; it removes nothing inside the signal band; and the $1/k$ rule is optimistic for
+resized, JPEG-compressed, signal-dependent noise. Choice of strength: too weak leaves
+environment-specific residual noise, too strong loses information uniformly (less injective, but no
+location leak). Bias toward over-filtering, with the noisiest training location as the reference.
+
+\paragraph{2. Adaptive filter.} The same family with strength set by $\hat\varsigma$:
+$X'^u=F_{\hat\varsigma(u)}(g(Z^u)+\eta^u)$. In the ideal case (projection onto $\mathcal M$ at every
+level) it is exact. A real adaptive filter removes noise by distorting the signal, and distorts it
+differently per location: the bias $b^u$ depends on $u$ (the same animal, at the same $z$, is crisp at a
+clean site and blurred at a noisy one), so the shared mixing is lost. Whether this is worse than the
+over- or under-filtering of a fixed filter is a practical question, not a theoretical one. It can win
+when noise levels differ strongly between sites, so that a filter tuned for the noisiest site
+over-smooths the clean ones.
+
+Estimating $\hat\varsigma$: from a robust high-frequency statistic (wavelet median absolute deviation,
+flat-patch variance), computed on the background only, with the animal bounding boxes masked (they are
+available in \texttt{ti\_dataset.py}), so that fur texture does not inflate it. The estimate is biased
+for correlated, signal-dependent noise; only its consistency across locations matters. Use pooled
+estimates per cell in training (many images) and the same estimator per image at inference.
+
+\paragraph{3. Equalization.} Estimate $\hat\varsigma_u$ and add $\Nn\bigl(0,\varsigma_{\max}^2-\hat\varsigma_u^2\bigr)$
+to every image, so that all environments end at the level $\varsigma_{\max}$. The noise stops depending on $u$, nothing is
+removed from the signal, and there is no bias, but information is degraded to the noisiest site and the
+common noise still passes through $h$. It is not deterministic: draw the added noise once per image with
+a fixed seed, so that the cached features are reproducible. It equalizes exactly only for
+signal-independent noise, and a mis-estimated $\hat\varsigma_u$ leaves an environment-specific residual of
+the same size as the error. Note that \emph{subtracting} a sampled noise draw does not denoise: the
+real $\eta^u$ is a specific realization, an independent draw $\eta'$ leaves $\eta^u-\eta'$ with variance
+$2\varsigma_u^2$.
+
+\paragraph{4. Learned denoiser.} A denoising autoencoder (or a Noise2Noise or Noise2Void style network)
+trained on the noisy images. At its optimum it returns the posterior mean
+$x+\varsigma_u^2\nabla_x\log p^{(u)}_X(x)$ for Gaussian noise (Tweedie), which for small $\varsigma_u$ is close
+to a projection onto the learned manifold, and that is the principled version of ideal denoising. But the manifold has to be
+learned from the same data, a network that is trained jointly with $\hat\varsigma$ is circular, its
+shrinkage again depends on $u$, and it may remove style. A generic pretrained denoiser projects onto the
+natural-image manifold, which has a much higher dimension than $\mathcal M$, so more noise stays and some signal
+goes. Not recommended as a first step.
+
+\begin{center}
+\small
+\begin{tabular}{@{}l L{4.2cm} L{3.8cm} L{4.3cm}@{}}
+\toprule
+approach & where environment dependence lands & removes & main risk\\
+\midrule
+none & noise, through $h$ & nothing & all effects of \cref{app:noise:prop}\\
+fixed filter & residual $r^u$ only & noise in one band & loses signal in the band, including grain\\
+adaptive filter & bias $b^u$ and residual & noise in a band, per level & location-dependent mixing\\
+equalization & residual, at a common level & nothing (adds) & information loss, reliance on $\hat\varsigma_u$\\
+learned denoiser & bias $b^u$ and residual & noise off the learned manifold & circularity, style removal\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{A single test image}
+\label{app:noise:single}
+A test image $x^{u^*}$ comes from an unseen environment $u^*$, and nothing about $u^*$ is available
+except the image itself. One image is enough to estimate the noise level: it has $10^5$ to $10^6$
+pixels, so for roughly white
+noise $\hat\varsigma$ is accurate, and per-image blind denoising is the standard setting of classical
+denoisers. The practical limit is the bias of the estimator for correlated, signal-dependent noise, which
+matters only if it differs by location. The rule is to use the \emph{same} per-image procedure in
+training and at inference. Estimating per location in training and per image at test would give two
+different pipelines. A fixed filter needs no estimate at all. Self-supervised single-image denoisers
+(Noise2Self, Deep Image Prior) need no noise model but are slow, since they run on every image.
+
+\subsection{Recommendation and test protocol}
+\label{app:noise:rec}
+\begin{enumerate}[label=(\arabic*),leftmargin=2.2em]
+\item \textbf{Measure first.} Estimate $\hat\varsigma$ on the background of the images of each training
+      location. If the levels are close, there is nothing to adapt, and a fixed filter (or none) is
+      enough.
+\item \textbf{Start with a fixed filter,} one strength for all locations, chosen for the noisiest
+      training location, erring toward over-filtering. Reasons: it keeps the shared map $F\circ g$ shared, has one
+      hyperparameter, and needs no extrapolation to a new location.
+\item \textbf{Adaptive only if needed:} if the levels differ strongly and the fixed filter visibly
+      over-smooths the clean sites. Then use the per-image estimator of \cref{app:noise:single}.
+\item \textbf{Equalization} is the alternative to adaptivity when the signal-independent
+      approximation is acceptable. A learned denoiser is the last resort.
+\end{enumerate}
+Decide between the arms (none, fixed, adaptive, optionally equalization) empirically:
+\begin{itemize}[leftmargin=1.5em]
+\item leave-one-location-out macro accuracy over L38/L43/L46 (L100 stays untouched until the end);
+\item the noiseless error floor of $\hat\mu$ (repeated runs on clean data) and the shift of $\hat\mu_c$
+      when known, location-dependent noise is added to the least noisy images before the arm is applied;
+      the threshold of \cref{app:noise:prop} is where that shift crosses the floor;
+\item the linear probe of \cref{app:probe} after cleaning (species accuracy, and within-species location
+      accuracy, which must stay above chance), since cleaning must keep the location-specific style
+      signal of $S^u$ while removing $\eta^u$.
+\end{itemize}
+
+\paragraph{Implementation notes.}
+\begin{itemize}[leftmargin=1.5em]
+\item Apply the same operator in training and at inference, before \texttt{extract\_features.py}, and
+      keep the values in the range the extractor checks (clip after filtering).
+\item \texttt{ti\_dataset.py} reads images that are already resized. A filter inserted there acts after
+      the resize, on noise that is already averaged and correlated. Filtering before the resize means
+      changing the preprocessing; the bounding-box transform is not affected, since only intensities change.
+\item Brightness (the time-of-day proxy of \cref{sec:use}) is a mean and is nearly unaffected by
+      zero-mean noise or low-pass filtering. Decide once whether it is computed before or after
+      cleaning, and use that choice at every location.
+\end{itemize}
+
+\subsection{Open items}
+\label{app:noise:open}
+\begin{itemize}[leftmargin=1.5em]
+\item The assumption that the noise level depends on $u$ only through $r(u)=(t,e)$, and that $\eta^u$ is
+      independent of $Z^u$ given $u$, is untested. Grain that depends on the style latents violates the
+      second part.
+\item The tangent shift of $\hat z^u$ under residual noise is a first-order argument only; its size for the
+      actual $h$ and head is not measured.
+\item The sketch of identifying $\varsigma_u$ needs isotropy and $d>n$, neither of which holds for real
+      feature residuals or for camera noise.
+\item Which fixed filter family preserves style best, and whether $F\circ g$ stays close enough to
+      injective, are untested; the linear probe is a necessary check, not a proof.
+\item Whether the noise level differs enough between L38, L43 and L46 for adaptivity to matter has not
+      been measured.
+\end{itemize}

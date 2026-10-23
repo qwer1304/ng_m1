@@ -15,6 +15,8 @@
 \usepackage{float}
 \usepackage{fnpct} %moves footnote marks after following punctuation (comma or full stop)
 \usepackage{parskip}
+\usepackage{array}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 
 % ---------- theorem-like environments ----------
 \theoremstyle{definition}
@@ -130,6 +132,10 @@ model, assumptions, environment requirements and implementation}
 
 % ---------------------------------------------------------------------
 \input{app_support_relaxation.tex}
+\newpage
+
+% ---------------------------------------------------------------------
+\input{app_observation_noise.tex}
 \newpage
 
 \addtocontents{toc}{%

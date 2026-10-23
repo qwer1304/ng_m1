@@ -189,23 +189,28 @@ $q$ and Gaussian prior and the single-sample KL estimate $\log q-\log p$.
 
 \paragraph{R1.}
 \begin{itemize}[leftmargin=1.5em]
-\item \texttt{M1Net.forward}: replace both \texttt{Normal} log-densities by truncated-normal log-densities,
-      $\log\mathcal N(z;m,s^2)-\log\bigl(\Phi(\tfrac{b-m}{s})-\Phi(\tfrac{a-m}{s})\bigr)$. The normalizer
-      must be computed stably (for example with \texttt{torch.special.log\_ndtr} and a log-difference of
-      exponentials). For the content block $m$ is the prior mean, which depends on $z$ through the mask, so
-      gradients flow through the normalizer.
-\item The posterior must also live on $S$, otherwise $\log p=-\infty$ for samples outside it. Use a truncated
-      normal $q$ with the same box, sampled by inverse-CDF reparameterization. Alternatively keep the Gaussian
-      $q$ with a bounded transform of its sample, but then the transform must be inside the density.
-\item \texttt{head.py}: \texttt{pre\_linear} still outputs a location and a log-variance, but the location is
-      now a parameter of a truncated normal and no longer the posterior mean. The deterministic latent used by
-      the BLAE losses, by \texttt{encode\_mu} and by validation must be fixed by a decision (mean of the
-      truncated $q$ is the natural choice) and applied consistently.
-\item The box $(a,b)$ is a hyperparameter in \texttt{config.py}. It cannot be learned freely: the likelihood
-      rewards shrinking it around the data. A rule from the data (quantiles of encoded locations after phase A)
-      is the practical option.
-\item Unchanged: \texttt{NodeWiseMLP}, \texttt{ADJMatrix}, the gate, the sparsity and moral losses, the
-      optimizer split. For very wide boxes the normalizer is close to $1$ and the code behaves as it does now.
+\item \texttt{M1Net.forward}: replace both \texttt{Normal} log-densities by truncated-normal 
+      log-densities,\linebreak
+      $\log\mathcal N(z;m,s^2)-\log\bigl(\Phi(\tfrac{b-m}{s})-\Phi(\tfrac{a-m}{s})\bigr)$. The 
+      normalizer must be computed stably (for example with 
+      \texttt{torch.special.log\_ndtr} and a log-difference of
+      exponentials). For the content block $m$ is the prior mean, which depends on $z$ through the 
+      mask, so gradients flow through the normalizer.
+\item The posterior must also live on $S$, otherwise $\log p=-\infty$ for samples outside it. Use a 
+      truncated normal $q$ with the same box, sampled by inverse-CDF reparameterization. 
+      Alternatively keep the Gaussian $q$ with a bounded transform of its sample, but then the 
+      transform must be inside the density.
+\item \texttt{head.py}: \texttt{pre\_linear} still outputs a location and a log-variance, but the 
+      location is now a parameter of a truncated normal and no longer the posterior mean. The 
+      deterministic latent used by the BLAE losses, by \texttt{encode\_mu} and by validation must be 
+      fixed by a decision (mean of the truncated $q$ is the natural choice) and applied 
+      consistently.
+\item The box $(a,b)$ is a hyperparameter in \texttt{config.py}. It cannot be learned freely: the 
+      likelihood rewards shrinking it around the data. A rule from the data (quantiles of encoded 
+      locations after phase A) is the practical option.
+\item Unchanged: \texttt{NodeWiseMLP}, \texttt{ADJMatrix}, the gate, the sparsity and moral losses, 
+      the optimizer split. For very wide boxes the normalizer is close to $1$ and the code behaves 
+      as it does now.
 \end{itemize}
 
 \paragraph{R2.} Everything in R1, plus:
@@ -234,9 +239,11 @@ $q$ and Gaussian prior and the single-sample KL estimate $\log q-\log p$.
 
 \subsection{Summary}
 \label{app:support:summary}
+{
+\renewcommand{\arraystretch}{1.3}
 \begin{center}
 \small
-\begin{tabular}{@{}p{2.6cm}p{3.6cm}p{3.6cm}p{4.2cm}@{}}
+\begin{tabular}{@{}p{2.6cm}p{3.6cm}L{3.6cm}L{4.2cm}@{}}
 \toprule
  & original & R1: common $S$ & R2: per-env $S_u$\\
 \midrule
@@ -251,3 +258,4 @@ M1 and estimator & as is & truncated prior and $q$, fixed box & cell-dependent b
 \bottomrule
 \end{tabular}
 \end{center}
+}
